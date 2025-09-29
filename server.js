@@ -117,11 +117,17 @@ function showResults(roomCode) {
 
         if (playerAnswerData && playerAnswerData.answerIndex === currentQuestion.correctAnswerIndex) {
             correctCount++;
-            const timeTaken = (playerAnswerData.submissionTime - room.questionStartTime) / 1000;
-            // O tempo total agora é o tempo da pergunta + o tempo de "prepare-se"
-            const totalTimeAvailable = QUESTION_TIME_SECONDS + PREPARE_TIME_SECONDS; 
-            const timeRatio = Math.max(0, 1 - (timeTaken / totalTimeAvailable));
-            const speedPoints = Math.round(POINTS_PER_ANSWER * timeRatio);
+            let speedPoints = 0;
+            if (room.gameOptions.scoreType === 'speed') {
+                // Cálculo por velocidade (o que já tínhamos)
+                const timeTaken = (playerAnswerData.submissionTime - room.questionStartTime) / 1000;
+                const totalTimeAvailable = QUESTION_TIME_SECONDS + 5;
+                const timeRatio = Math.max(0, 1 - (timeTaken / totalTimeAvailable));
+                speedPoints = Math.round(POINTS_PER_ANSWER * timeRatio);
+            } else { // scoreType === 'correct'
+                // Pontos fixos por acerto
+                speedPoints = POINTS_PER_ANSWER;
+            }
 
             player.streak++;
             const streakBonusPoints = (player.streak - 1) * STREAK_BONUS;
@@ -140,7 +146,13 @@ function showResults(roomCode) {
         });
     });
 
+    
     roundRanking.sort((a, b) => b.totalScore - a.totalScore);
+    let finalRanking = roundRanking;
+
+    if(!room.gameOptions.showRanking){
+        finalRanking = [];
+    }
     
     const results = { 
         correctAnswerIndex: currentQuestion.correctAnswerIndex,
@@ -154,7 +166,7 @@ function showResults(roomCode) {
             gameState: 'showingResults',
             results: results,
             options: currentQuestion.options,
-            ranking: roundRanking
+            ranking: finalRanking
         };
         if (player.id !== room.hostId) {
             const playerAnswerData = room.answers[player.id];
@@ -184,19 +196,41 @@ function endGame(roomCode) {
 // ======================================
 
 io.on('connection', (socket) => {
-    // ... createRoom e joinRoom (sem mudanças)
-    socket.on('createRoom', (nickname) => {
+    socket.on('createRoom', ({ nickname, gameOptions }) => {
+        console.log(`Host criando sala com nickname: ${nickname}`); // Log para confirmar
+
         const roomCode = generateRoomCode();
         rooms[roomCode] = {
             hostId: socket.id,
-            players: [{ id: socket.id, nickname: nickname, score: 0, streak: 0 }],
+            
+            // CORREÇÃO: Usamos a variável 'nickname' (que é uma String) para criar o jogador Host.
+            players: [{ 
+                id: socket.id, 
+                nickname: nickname, 
+                score: 0, 
+                streak: 0 
+            }],
+            
             gameState: 'lobby',
-            // NOVO: Adiciona as questões e o índice à sala
-            questions: gameQuestions, // Em um app real, isso viria das opções do host
-            currentQuestionIndex: -1 // Começa em -1 para que o primeiro incremento seja 0
+            questions: gameQuestions,
+            currentQuestionIndex: -1,
+            gameOptions: {
+                // Lógica defensiva para definir os valores padrão
+                showRanking: gameOptions ? gameOptions.showRanking !== false : true,
+                scoreType: gameOptions ? gameOptions.scoreType || 'speed' : 'speed'
+            }
         };
         socket.join(roomCode);
-        socket.emit('roomCreated', { roomCode, players: rooms[roomCode].players });
+        
+        // Envia a resposta para o Host com o ID do Host incluído
+        socket.emit('roomCreated', { 
+            roomCode: roomCode, 
+            players: rooms[roomCode].players,
+            hostId: rooms[roomCode].hostId
+        });
+        
+        console.log(`Sala ${roomCode} criada pelo Host ${nickname}.`);
+        console.log(`[DEBUG] Criada sala ${roomCode} com hostId = ${rooms[roomCode].hostId}`);
     });
 
     socket.on('joinRoom', ({ roomCode, nickname }) => {
@@ -222,11 +256,37 @@ io.on('connection', (socket) => {
         // Responde APENAS ao jogador com uma confirmação de sucesso
         socket.emit('joinSuccess', { 
             roomCode: roomCode, 
-            players: room.players 
+            players: room.players,
+            hostId: room.hostId // ENVIA O ID DO HOST
         });
         
         // Avisa a TODOS OS OUTROS jogadores na sala que um novo jogador entrou
         socket.to(roomCode).emit('updatePlayerList', room.players);
+    });
+
+    // ===== NOVO EVENTO: host:kickPlayer =====
+    socket.on('host:kickPlayer', ({ roomCode, playerIdToKick }) => {
+        const room = rooms[roomCode];
+        // Garante que apenas o host pode expulsar e que ele não expulse a si mesmo
+        if (room && room.hostId === socket.id && playerIdToKick !== socket.id) {
+            
+            // Encontra o socket do jogador a ser expulso
+            const socketToKick = io.sockets.sockets.get(playerIdToKick);
+            if (socketToKick) {
+                // Envia uma mensagem para o jogador expulso
+                socketToKick.emit('kicked', 'Você foi removido da sala pelo Host.');
+                // Força a desconexão dele da sala
+                socketToKick.leave(roomCode);
+            }
+            
+            // Remove o jogador da lista da sala
+            room.players = room.players.filter(p => p.id !== playerIdToKick);
+            
+            // Atualiza a lista de jogadores para todos que permaneceram na sala
+            io.to(roomCode).emit('updatePlayerList', room.players);
+            
+            console.log(`[${roomCode}] Host expulsou o jogador ${playerIdToKick}.`);
+        }
     });
     
     // ===== EVENTOS DE JOGO ATUALIZADOS =====
