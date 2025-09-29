@@ -117,6 +117,7 @@ function showResults(roomCode) {
 
         if (playerAnswerData && playerAnswerData.answerIndex === currentQuestion.correctAnswerIndex) {
             correctCount++;
+            player.correctAnswers++;
             let speedPoints = 0;
             if (room.gameOptions.scoreType === 'speed') {
                 // Cálculo por velocidade (o que já tínhamos)
@@ -135,6 +136,7 @@ function showResults(roomCode) {
             player.score = (player.score || 0) + pointsThisRound;
         } else {
             incorrectCount++;
+            player.wrongAnswers++;
             player.streak = 0;
         }
 
@@ -143,6 +145,9 @@ function showResults(roomCode) {
             nickname: player.nickname,
             pointsThisRound: pointsThisRound,
             totalScore: player.score,
+            streak: player.streak,
+            correctAnswers: player.correctAnswers,
+            wrongAnswers: player.wrongAnswers
         });
     });
 
@@ -208,7 +213,9 @@ io.on('connection', (socket) => {
                 id: socket.id, 
                 nickname: nickname, 
                 score: 0, 
-                streak: 0 
+                streak: 0, 
+                correctAnswers: 0,
+                wrongAnswers: 0
             }],
             
             gameState: 'lobby',
@@ -250,7 +257,7 @@ io.on('connection', (socket) => {
         }
 
         // Caso 3: Sucesso!
-        room.players.push({ id: socket.id, nickname: nickname, score: 0, streak: 0 });
+        room.players.push({ id: socket.id, nickname: nickname, score: 0, streak: 0, correctAnswers: 0, wrongAnswers: 0 });
         socket.join(roomCode);
         
         // Responde APENAS ao jogador com uma confirmação de sucesso
