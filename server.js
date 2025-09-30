@@ -131,6 +131,7 @@ function showResults(roomCode) {
             }
 
             player.streak++;
+            if (player.streak > player.bestStreak) player.bestStreak = player.streak;
             const streakBonusPoints = (player.streak - 1) * STREAK_BONUS;
             pointsThisRound = speedPoints + streakBonusPoints;
             player.score = (player.score || 0) + pointsThisRound;
@@ -146,6 +147,7 @@ function showResults(roomCode) {
             pointsThisRound: pointsThisRound,
             totalScore: player.score,
             streak: player.streak,
+            bestStreak: player.bestStreak || 0,
             correctAnswers: player.correctAnswers,
             wrongAnswers: player.wrongAnswers
         });
