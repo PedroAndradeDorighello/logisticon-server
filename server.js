@@ -354,6 +354,35 @@ io.on('connection', (socket) => {
             showResults(roomCode); // Chama a função de resultados imediatamente
         }
     });
+
+    socket.on('client:sendMessage', ({ roomCode, message }) => {
+        // 1. Encontrar a sala
+        const room = rooms[roomCode];
+        if (!room) {
+            // Se a sala não existe, não faz nada
+            return;
+        }
+
+        // 2. Encontrar o jogador que enviou a mensagem (para pegar o nickname)
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) {
+            // Se o jogador não for encontrado
+            return;
+        }
+
+        // 3. Preparar o payload da mensagem
+        const chatPayload = {
+            senderId: player.id,
+            senderNickname: player.nickname,
+            message: message, // ATENÇÃO: Para produção, sanitize esta string!
+            timestamp: Date.now()
+        };
+
+        // 4. Emitir a mensagem para TODOS na sala (incluindo o remetente)
+        io.to(roomCode).emit('server:newMessage', chatPayload);
+        
+        console.log(`[${roomCode}] Chat: ${player.nickname}: ${message}`);
+    });
     
     socket.on('disconnect', () => {
         console.log(`[DESCONECTADO] Usuário com ID: ${socket.id}`);
