@@ -203,6 +203,50 @@ function endGame(roomCode) {
 // ======================================
 
 io.on('connection', (socket) => {
+    // 1. O usuário define seu nickname assim que conecta
+    socket.on('user:setNickname', (nickname) => {
+        // Armazena o nickname no próprio socket para uso posterior
+        socket.nickname = nickname; 
+        console.log(`[CONECTADO] Usuário ${socket.id} definiu o nickname como: ${nickname}`);
+    });
+
+    // 2. O usuário entra em um tópico de chat
+    socket.on('chat:joinTopic', (topic) => {
+        // O "topic_" previne conflito com os IDs das salas de jogo
+        const topicRoomName = `topic_${topic}`;
+        socket.join(topicRoomName);
+        console.log(`[CHAT] ${socket.nickname} entrou no tópico: ${topic}`);
+    });
+
+    // 3. O usuário sai de um tópico de chat
+    socket.on('chat:leaveTopic', (topic) => {
+        const topicRoomName = `topic_${topic}`;
+        socket.leave(topicRoomName);
+        console.log(`[CHAT] ${socket.nickname} saiu do tópico: ${topic}`);
+    });
+
+    // 4. O usuário envia uma mensagem para um tópico
+    socket.on('chat:sendMessage', ({ topic, message }) => {
+        const topicRoomName = `topic_${topic}`;
+        
+        // Se o socket não tiver um nickname (conectou mas não definiu),
+        // usamos um nome padrão.
+        const nickname = socket.nickname || 'Anônimo';
+
+        const chatPayload = {
+            senderId: socket.id,
+            senderNickname: nickname,
+            message: message,
+            topic: topic, // Envia o tópico de volta para a UI filtrar
+            timestamp: Date.now()
+        };
+
+        // Emite a mensagem APENAS para quem está no tópico
+        io.to(topicRoomName).emit('server:newMessage', chatPayload);
+        
+        console.log(`[${topicRoomName}] ${nickname}: ${message}`);
+    });
+
     socket.on('createRoom', ({ nickname, gameOptions }) => {
         console.log(`Host criando sala com nickname: ${nickname}`); // Log para confirmar
 
@@ -354,49 +398,19 @@ io.on('connection', (socket) => {
             showResults(roomCode); // Chama a função de resultados imediatamente
         }
     });
-
-    socket.on('client:sendMessage', ({ roomCode, message }) => {
-        // 1. Encontrar a sala
-        const room = rooms[roomCode];
-        if (!room) {
-            // Se a sala não existe, não faz nada
-            return;
-        }
-
-        // 2. Encontrar o jogador que enviou a mensagem (para pegar o nickname)
-        const player = room.players.find(p => p.id === socket.id);
-        if (!player) {
-            // Se o jogador não for encontrado
-            return;
-        }
-
-        // 3. Preparar o payload da mensagem
-        const chatPayload = {
-            senderId: player.id,
-            senderNickname: player.nickname,
-            message: message, // ATENÇÃO: Para produção, sanitize esta string!
-            timestamp: Date.now()
-        };
-
-        // 4. Emitir a mensagem para TODOS na sala (incluindo o remetente)
-        io.to(roomCode).emit('server:newMessage', chatPayload);
-        
-        console.log(`[${roomCode}] Chat: ${player.nickname}: ${message}`);
-    });
     
     socket.on('disconnect', () => {
         console.log(`[DESCONECTADO] Usuário com ID: ${socket.id}`);
+        // Lógica de disconnect das salas de JOGO
         for (const roomCode in rooms) {
             const room = rooms[roomCode];
             const playerIndex = room.players.findIndex(p => p.id === socket.id);
             if (playerIndex !== -1) {
                 if (socket.id === room.hostId) {
-                    // Se o host desconectar, encerra o jogo e avisa a todos
                     if (room.timer) clearTimeout(room.timer);
                     io.to(roomCode).emit('error', 'O Host encerrou a sala.');
                     delete rooms[roomCode];
                 } else {
-                    // Se um guest sair, apenas atualiza a lista
                     room.players.splice(playerIndex, 1);
                     io.to(roomCode).emit('updatePlayerList', room.players);
                 }
