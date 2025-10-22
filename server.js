@@ -319,7 +319,8 @@ io.on('connection', (socket) => {
         console.log(`[CONECTADO] Usuário ${socket.id} definiu o nickname como: ${nickname}`);
     });
 
-    socket.on('createRoom', ({ nickname, gameOptions }) => {
+    socket.on('createRoom', ({ gameOptions }) => {
+        const nickname = socket.nickname || 'Host Anonimo';
         console.log(`Host criando sala com nickname: ${nickname}`); // Log para confirmar
 
         const roomCode = generateRoomCode();
@@ -358,8 +359,9 @@ io.on('connection', (socket) => {
         console.log(`[DEBUG] Criada sala ${roomCode} com hostId = ${rooms[roomCode].hostId}`);
     });
 
-    socket.on('joinRoom', ({ roomCode, nickname }) => {
+    socket.on('joinRoom', ({ roomCode }) => {
         const room = rooms[roomCode];
+        const nickname = socket.nickname || 'Jogador Anonimo';
 
         // Caso 1: Sala não existe
         if (!room) {

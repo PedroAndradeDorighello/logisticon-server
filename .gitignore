@@ -1,2 +1,9 @@
-# Segredos do Firebase
+# Dependências do Node.js
+/node_modules
+
+# Arquivos secretos do Firebase (como discutimos)
 service-account-key.json
+
+# Arquivos de ambiente
+.env
+.env.*
