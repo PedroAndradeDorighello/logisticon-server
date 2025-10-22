@@ -229,15 +229,19 @@ io.on('connection', (socket) => {
     // O Flutter enviará o token do Firebase após a conexão
     socket.on('user:authenticate', async (token) => {
         try {
-            // O servidor verifica o token com o Firebase
             const decodedToken = await admin.auth().verifyIdToken(token);
-            // O token é válido! Agora confiamos neste socket.
             socket.uid = decodedToken.uid; 
-            socket.nickname = decodedToken.name || 'Anônimo'; // Pega o nome do Firebase
+            socket.nickname = decodedToken.name || 'Anônimo';
             console.log(`[AUTH] Usuário ${socket.nickname} (UID: ${socket.uid}) autenticado.`);
+            
+            // ===== ADICIONE ESTA LINHA =====
+            // Envia a confirmação e o nickname de volta para o cliente
+            socket.emit('auth:success', { uid: socket.uid, nickname: socket.nickname });
+            // ================================
+
         } catch (error) {
             console.log(`[AUTH FALHOU] ${error.message}`);
-            socket.disconnect(true); // Desconecta se o token for inválido
+            socket.disconnect(true);
         }
     });
 
