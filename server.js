@@ -3,6 +3,27 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 
+const admin = require('firebase-admin');
+const sanitizeHtml = require('sanitize-html');
+let serviceAccount;
+
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  // 1. Está rodando no Render
+  console.log("Carregando credenciais do Firebase a partir do Environment Variable...");
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} else {
+  // 2. Está rodando localmente
+  console.log("Carregando credenciais do Firebase a partir do arquivo service-account-key.json local...");
+  // Este arquivo NÃO PODE ESTAR NO GITHUB.
+  // Certifique-se que 'service-account-key.json' está no seu .gitignore
+  serviceAccount = require('./service-account-key.json');
+}
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+const db = admin.firestore();
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -203,48 +224,95 @@ function endGame(roomCode) {
 // ======================================
 
 io.on('connection', (socket) => {
-    // 1. O usuário define seu nickname assim que conecta
-    socket.on('user:setNickname', (nickname) => {
-        // Armazena o nickname no próprio socket para uso posterior
-        socket.nickname = nickname; 
-        console.log(`[CONECTADO] Usuário ${socket.id} definiu o nickname como: ${nickname}`);
+    console.log(`[CONECTADO] Novo socket: ${socket.id}`);
+    // ===== 1. AUTENTICAÇÃO DO USUÁRIO =====
+    // O Flutter enviará o token do Firebase após a conexão
+    socket.on('user:authenticate', async (token) => {
+        try {
+            // O servidor verifica o token com o Firebase
+            const decodedToken = await admin.auth().verifyIdToken(token);
+            // O token é válido! Agora confiamos neste socket.
+            socket.uid = decodedToken.uid; 
+            socket.nickname = decodedToken.name || 'Anônimo'; // Pega o nome do Firebase
+            console.log(`[AUTH] Usuário ${socket.nickname} (UID: ${socket.uid}) autenticado.`);
+        } catch (error) {
+            console.log(`[AUTH FALHOU] ${error.message}`);
+            socket.disconnect(true); // Desconecta se o token for inválido
+        }
     });
 
-    // 2. O usuário entra em um tópico de chat
-    socket.on('chat:joinTopic', (topic) => {
-        // O "topic_" previne conflito com os IDs das salas de jogo
+    // ===== 2. LÓGICA DE CHAT POR TÓPICO =====
+    socket.on('chat:joinTopic', async (topic) => {
+        if (!socket.uid) return; // Ignore se não estiver autenticado
+
         const topicRoomName = `topic_${topic}`;
         socket.join(topicRoomName);
         console.log(`[CHAT] ${socket.nickname} entrou no tópico: ${topic}`);
+
+        // ** CARREGAR HISTÓRICO **
+        try {
+            const messagesRef = db.collection('chats').doc(topic).collection('messages');
+            const snapshot = await messagesRef.orderBy('timestamp', 'desc').limit(50).get();
+
+            if (snapshot.empty) {
+                socket.emit('chat:history', []); // Envia histórico vazio
+                return;
+            }
+
+            const history = snapshot.docs.map(doc => doc.data()).reverse(); // Inverte para ordem cronológica
+            socket.emit('chat:history', history); // Envia o histórico SÓ PARA ESTE USUÁRIO
+
+        } catch (error) {
+            console.log(`[HISTÓRICO ERRO] Falha ao buscar histórico: ${error.message}`);
+        }
     });
 
-    // 3. O usuário sai de um tópico de chat
     socket.on('chat:leaveTopic', (topic) => {
+        if (!socket.uid) return;
         const topicRoomName = `topic_${topic}`;
         socket.leave(topicRoomName);
         console.log(`[CHAT] ${socket.nickname} saiu do tópico: ${topic}`);
     });
 
-    // 4. O usuário envia uma mensagem para um tópico
-    socket.on('chat:sendMessage', ({ topic, message }) => {
-        const topicRoomName = `topic_${topic}`;
-        
-        // Se o socket não tiver um nickname (conectou mas não definiu),
-        // usamos um nome padrão.
-        const nickname = socket.nickname || 'Anônimo';
+    socket.on('chat:sendMessage', async ({ topic, message }) => {
+        if (!socket.uid) return; // Não autenticado
 
+        // ** 1. SANITIZAR A MENSAGEM (SEGURANÇA) **
+        const sanitizedMessage = sanitizeHtml(message, {
+            allowedTags: [], // Remove TODAS as tags HTML
+            allowedAttributes: {}
+        });
+
+        if (sanitizedMessage.trim().length === 0) return; // Ignora mensagens vazias
+
+        // ** 2. PREPARAR O PAYLOAD **
         const chatPayload = {
-            senderId: socket.id,
-            senderNickname: nickname,
-            message: message,
-            topic: topic, // Envia o tópico de volta para a UI filtrar
-            timestamp: Date.now()
+            senderId: socket.uid, // UID seguro do Firebase
+            senderNickname: socket.nickname, // Nickname seguro do token
+            message: sanitizedMessage,
+            topic: topic,
+            timestamp: admin.firestore.FieldValue.serverTimestamp() // Timestamp do servidor
         };
 
-        // Emite a mensagem APENAS para quem está no tópico
-        io.to(topicRoomName).emit('server:newMessage', chatPayload);
-        
-        console.log(`[${topicRoomName}] ${nickname}: ${message}`);
+        // ** 3. SALVAR NO FIREBASE **
+        try {
+            const docRef = await db.collection('chats').doc(topic).collection('messages').add(chatPayload);
+            console.log(`[CHAT DB] Mensagem ${docRef.id} salva.`);
+
+            // ** 4. TRANSMITIR PARA A SALA **
+            // (Precisamos ler o documento salvo para obter o timestamp real)
+            const finalPayload = (await docRef.get()).data();
+            io.to(`topic_${topic}`).emit('server:newMessage', finalPayload);
+
+        } catch (error) {
+            console.log(`[CHAT DB ERRO] Falha ao salvar mensagem: ${error.message}`);
+        }
+    });
+
+    socket.on('user:setNickname', (nickname) => {
+        // Armazena o nickname no próprio socket para uso posterior
+        socket.nickname = nickname; 
+        console.log(`[CONECTADO] Usuário ${socket.id} definiu o nickname como: ${nickname}`);
     });
 
     socket.on('createRoom', ({ nickname, gameOptions }) => {
