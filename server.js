@@ -395,9 +395,9 @@ io.on('connection', (socket) => {
         console.log(`[DEBUG] Criada sala ${roomCode} com hostId = ${rooms[roomCode].hostId}`);
     });
 
-    socket.on('joinRoom', ({ nickname, roomCode }) => {
+    socket.on('joinRoom', ({ roomCode, nickname }) => {
         const room = rooms[roomCode];
-        const gameNickname = socket.nickname || 'Jogador Anonimo';
+        const gameNickname = nickname || 'Jogador Anonimo';
         const email = socket.email || null;
 
         // Caso 1: Sala não existe
@@ -414,18 +414,27 @@ io.on('connection', (socket) => {
         }
 
         // Caso 3: Sucesso!
-        room.players.push({ id: socket.id, nickname: gameNickname, email: email, score: 0, streak: 0, correctAnswers: 0, wrongAnswers: 0 });
+        room.players.push({ 
+            id: socket.id, 
+            nickname: gameNickname, 
+            email: email, 
+            score: 0, 
+            streak: 0, 
+            correctAnswers: 0, 
+            wrongAnswers: 0 
+        });
         socket.join(roomCode);
         
         // Responde APENAS ao jogador com uma confirmação de sucesso
         socket.emit('joinSuccess', { 
             roomCode: roomCode, 
             players: room.players,
-            hostId: room.hostId // ENVIA O ID DO HOST
+            hostId: room.hostId
         });
         
         // Avisa a TODOS OS OUTROS jogadores na sala que um novo jogador entrou
         socket.to(roomCode).emit('updatePlayerList', room.players);
+        console.log(`Jogador ${gameNickname} (Email: ${email}) entrou na sala ${roomCode}.`);
     });
 
     // ===== NOVO EVENTO: host:kickPlayer =====
