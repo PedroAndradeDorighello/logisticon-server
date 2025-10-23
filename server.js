@@ -241,6 +241,7 @@ io.on('connection', (socket) => {
 
         } catch (error) {
             console.log(`[AUTH FALHOU] ${error.message}`);
+            socket.emit('auth:failed', error.message);
             socket.disconnect(true);
         }
     });
