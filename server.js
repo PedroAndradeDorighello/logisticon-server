@@ -231,17 +231,27 @@ io.on('connection', (socket) => {
         try {
             const decodedToken = await admin.auth().verifyIdToken(token);
             socket.uid = decodedToken.uid; 
-            socket.nickname = decodedToken.name || 'Anônimo';
+            
+            // ===== LÓGICA DE NICKNAME ATUALIZADA =====
+            let nicknameToUse;
+            // Verifica se o provedor de login é anônimo
+            if (decodedToken.firebase.sign_in_provider === 'anonymous') {
+                nicknameToUse = 'Anonymous';
+            } else {
+                // Para outros tipos de login (Google, Email), usa o displayName
+                // Se displayName for nulo, usa 'Usuário Anônimo'
+                nicknameToUse = decodedToken.name || 'Usuário Anônimo'; 
+            }
+            socket.nickname = nicknameToUse;
+            // ==========================================
+
             console.log(`[AUTH] Usuário ${socket.nickname} (UID: ${socket.uid}) autenticado.`);
             
-            // ===== ADICIONE ESTA LINHA =====
-            // Envia a confirmação e o nickname de volta para o cliente
             socket.emit('auth:success', { uid: socket.uid, nickname: socket.nickname });
-            // ================================
 
         } catch (error) {
             console.log(`[AUTH FALHOU] ${error.message}`);
-            socket.emit('auth:failed', error.message);
+            socket.emit('auth:failed', error.message); 
             socket.disconnect(true);
         }
     });
