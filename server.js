@@ -249,7 +249,10 @@ io.on('connection', (socket) => {
                 if (socket.email) { // Usa o email armazenado
                     nicknameToUse = socket.email.split('@')[0];
                 }
-            } else {
+            } else if (provider === 'anonymous') {
+                nicknameToUse = 'Anônimo';
+            } 
+            else {
                 // Outros logins: Tenta nome, senão parte antes do @ do email
                 if (decodedToken.name) {
                     nicknameToUse = decodedToken.name;
