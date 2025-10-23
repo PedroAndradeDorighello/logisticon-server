@@ -225,28 +225,49 @@ function endGame(roomCode) {
 
 io.on('connection', (socket) => {
     console.log(`[CONECTADO] Novo socket: ${socket.id}`);
-    // ===== 1. AUTENTICAÇÃO DO USUÁRIO =====
-    // O Flutter enviará o token do Firebase após a conexão
     socket.on('user:authenticate', async (token) => {
         try {
             const decodedToken = await admin.auth().verifyIdToken(token);
-            socket.uid = decodedToken.uid; 
+            socket.uid = decodedToken.uid;
             
-            // ===== LÓGICA DE NICKNAME ATUALIZADA =====
-            let nicknameToUse;
-            // Verifica se o provedor de login é anônimo
-            if (decodedToken.firebase.sign_in_provider === 'anonymous') {
+            // ** ARMAZENA O EMAIL COMPLETO NO SOCKET **
+            socket.email = decodedToken.email || null; // Guarda o email completo
+            
+            // LÓGICA DE PRIORIDADE DO NICKNAME (PARA EXIBIÇÃO)
+            let nicknameToUse = 'Anônimo'; // Fallback
+            const provider = decodedToken.firebase.sign_in_provider;
+            
+            if (provider === 'google.com') {
+                // Login Google: Prioriza nome do Google, senão parte antes do @ do email
+                if (decodedToken.name) {
+                    nicknameToUse = decodedToken.name;
+                } else if (socket.email) { // Usa o email armazenado
+                    nicknameToUse = socket.email.split('@')[0];
+                }
+            } else if (provider === 'password') {
+                // Login Email/Senha: Usa parte antes do @ do email
+                if (socket.email) { // Usa o email armazenado
+                    nicknameToUse = socket.email.split('@')[0];
+                }
+            } else if (provider === 'anonymous') {
                 nicknameToUse = 'Anonymous';
             } else {
-                // Para outros tipos de login (Google, Email), usa o displayName
-                // Se displayName for nulo, usa 'Usuário Anônimo'
-                nicknameToUse = decodedToken.name || 'Usuário Anônimo'; 
+                // Outros logins: Tenta nome, senão parte antes do @ do email
+                if (decodedToken.name) {
+                    nicknameToUse = decodedToken.name;
+                } else if (socket.email) { // Usa o email armazenado
+                    nicknameToUse = socket.email.split('@')[0];
+                }
             }
+            
+            // Armazena o NICKNAME (para exibição) no socket
             socket.nickname = nicknameToUse;
+            
             // ==========================================
 
-            console.log(`[AUTH] Usuário ${socket.nickname} (UID: ${socket.uid}) autenticado.`);
+            console.log(`[AUTH] Usuário ${socket.nickname} (Email: ${socket.email || 'N/A'}, UID: ${socket.uid}) autenticado.`);
             
+            // Envia o nickname para o cliente (não precisa enviar o email)
             socket.emit('auth:success', { uid: socket.uid, nickname: socket.nickname });
 
         } catch (error) {
@@ -302,11 +323,12 @@ io.on('connection', (socket) => {
 
         // ** 2. PREPARAR O PAYLOAD **
         const chatPayload = {
-            senderId: socket.uid, // UID seguro do Firebase
-            senderNickname: socket.nickname, // Nickname seguro do token
+            senderId: socket.uid,
+            senderNickname: socket.nickname, // Nickname para exibição
+            senderEmail: socket.email,      // Email completo para armazenamento
             message: sanitizedMessage,
             topic: topic,
-            timestamp: admin.firestore.FieldValue.serverTimestamp() // Timestamp do servidor
+            timestamp: admin.firestore.FieldValue.serverTimestamp()
         };
 
         // ** 3. SALVAR NO FIREBASE **
