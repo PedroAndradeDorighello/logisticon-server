@@ -211,12 +211,13 @@ function endGame(roomCode) {
     room.gameState = 'endGame';
     
     const finalRanking = room.players
-        .filter(p => p.id !== room.hostId)
-        .sort((a, b) => b.score - a.score);
+            .filter(p => p.id !== room.hostId)
+            .map(p => ({ ...p, bestStreak: p.bestStreak || 0 })) 
+            .sort((a, b) => b.score - a.score);
 
     io.to(roomCode).emit('gameStateUpdate', {
         gameState: 'endGame',
-        // MUDANÇA: Envia o ranking completo em vez de apenas o pódio
+        showRanking: room.gameOptions.showRanking,
         finalRanking: finalRanking 
     });
     console.log(`[${roomCode}] Jogo finalizado.`);
@@ -355,16 +356,17 @@ io.on('connection', (socket) => {
 
     socket.on('createRoom', ({ gameOptions }) => {
         const nickname = socket.nickname || 'Host Anonimo';
+        const email = socket.email || null;
         console.log(`Host criando sala com nickname: ${nickname}`); // Log para confirmar
 
         const roomCode = generateRoomCode();
         rooms[roomCode] = {
             hostId: socket.id,
             
-            // CORREÇÃO: Usamos a variável 'nickname' (que é uma String) para criar o jogador Host.
             players: [{ 
                 id: socket.id, 
                 nickname: nickname, 
+                email: email,
                 score: 0, 
                 streak: 0, 
                 correctAnswers: 0,
@@ -396,6 +398,7 @@ io.on('connection', (socket) => {
     socket.on('joinRoom', ({ roomCode }) => {
         const room = rooms[roomCode];
         const nickname = socket.nickname || 'Jogador Anonimo';
+        const email = socket.email || null;
 
         // Caso 1: Sala não existe
         if (!room) {
@@ -411,7 +414,7 @@ io.on('connection', (socket) => {
         }
 
         // Caso 3: Sucesso!
-        room.players.push({ id: socket.id, nickname: nickname, score: 0, streak: 0, correctAnswers: 0, wrongAnswers: 0 });
+        room.players.push({ id: socket.id, nickname: nickname, email: email, score: 0, streak: 0, correctAnswers: 0, wrongAnswers: 0 });
         socket.join(roomCode);
         
         // Responde APENAS ao jogador com uma confirmação de sucesso
