@@ -354,10 +354,10 @@ io.on('connection', (socket) => {
         console.log(`[CONECTADO] Usuário ${socket.id} definiu o nickname como: ${nickname}`);
     });
 
-    socket.on('createRoom', ({ gameOptions }) => {
-        const nickname = socket.nickname || 'Host Anonimo';
+    socket.on('createRoom', ({ nickname, gameOptions }) => {
+        const gameNickname = nickname || 'Host Anônimo';
         const email = socket.email || null;
-        console.log(`Host criando sala com nickname: ${nickname}`); // Log para confirmar
+        console.log(`Host criando sala com nickname de JOGO: ${gameNickname}, Email: ${email}`);
 
         const roomCode = generateRoomCode();
         rooms[roomCode] = {
@@ -365,7 +365,7 @@ io.on('connection', (socket) => {
             
             players: [{ 
                 id: socket.id, 
-                nickname: nickname, 
+                nickname: gameNickname, 
                 email: email,
                 score: 0, 
                 streak: 0, 
@@ -395,9 +395,9 @@ io.on('connection', (socket) => {
         console.log(`[DEBUG] Criada sala ${roomCode} com hostId = ${rooms[roomCode].hostId}`);
     });
 
-    socket.on('joinRoom', ({ roomCode }) => {
+    socket.on('joinRoom', ({ nickname, roomCode }) => {
         const room = rooms[roomCode];
-        const nickname = socket.nickname || 'Jogador Anonimo';
+        const gameNickname = socket.nickname || 'Jogador Anonimo';
         const email = socket.email || null;
 
         // Caso 1: Sala não existe
@@ -414,7 +414,7 @@ io.on('connection', (socket) => {
         }
 
         // Caso 3: Sucesso!
-        room.players.push({ id: socket.id, nickname: nickname, email: email, score: 0, streak: 0, correctAnswers: 0, wrongAnswers: 0 });
+        room.players.push({ id: socket.id, nickname: gameNickname, email: email, score: 0, streak: 0, correctAnswers: 0, wrongAnswers: 0 });
         socket.join(roomCode);
         
         // Responde APENAS ao jogador com uma confirmação de sucesso
