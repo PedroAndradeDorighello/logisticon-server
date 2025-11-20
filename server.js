@@ -218,7 +218,8 @@ function endGame(roomCode) {
     io.to(roomCode).emit('gameStateUpdate', {
         gameState: 'endGame',
         showRanking: room.gameOptions.showRanking,
-        finalRanking: finalRanking 
+        finalRanking: finalRanking, 
+        playedQuestions: room.questions
     });
     console.log(`[${roomCode}] Jogo finalizado.`);
 }
