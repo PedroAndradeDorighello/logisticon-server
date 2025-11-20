@@ -1,4 +1,3 @@
-// server.js (VERSÃO COM MÚLTIPLAS QUESTÕES)
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -8,14 +7,10 @@ const sanitizeHtml = require('sanitize-html');
 let serviceAccount;
 
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  // 1. Está rodando no Render
   console.log("Carregando credenciais do Firebase a partir do Environment Variable...");
   serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 } else {
-  // 2. Está rodando localmente
   console.log("Carregando credenciais do Firebase a partir do arquivo service-account-key.json local...");
-  // Este arquivo NÃO PODE ESTAR NO GITHUB.
-  // Certifique-se que 'service-account-key.json' está no seu .gitignore
   serviceAccount = require('./service-account-key.json');
 }
 
@@ -31,59 +26,48 @@ const io = new Server(server);
 const PORT = 3000;
 let rooms = {};
 
-const POINTS_PER_ANSWER = 1000; // Pontos máximos por resposta
-const STREAK_BONUS = 20;       // Bônus por cada acerto em sequência
+const POINTS_PER_ANSWER = 1000;
+const STREAK_BONUS = 20;
 const QUESTION_TIME_SECONDS = 30;
 const PREPARE_TIME_SECONDS = 5;
 
-// ===== NOVO: LISTA DE PERGUNTAS DE EXEMPLO =====
-const gameQuestions = [
+// Perguntas de fallback caso o host não envie nada (apenas para teste)
+const fallbackQuestions = [
     {
-        text: "Qual destes planetas é conhecido como 'Planeta Vermelho'?",
-        options: ["Vênus", "Marte", "Júpiter", "Saturno"],
-        correctAnswerIndex: 1
-    },
-    {
-        text: "Qual é o maior oceano da Terra?",
-        options: ["Atlântico", "Índico", "Ártico", "Pacífico"],
-        correctAnswerIndex: 3
-    },
-    {
-        text: "Qual é a capital da Austrália?",
-        options: ["Sydney", "Melbourne", "Canberra", "Perth"],
-        correctAnswerIndex: 2
+        text: "Aguardando o Host configurar as questões...",
+        options: ["..."],
+        correctAnswerIndex: 0,
+        syllogism: {}
     }
 ];
-// ==============================================
 
 function generateRoomCode() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// ===== LÓGICA DO JOGO REFEITA =====
 function advanceToNextQuestion(roomCode) {
     const room = rooms[roomCode];
     if (!room) return;
 
-    room.currentQuestionIndex++; // Avança para a próxima questão
+    room.currentQuestionIndex++;
     
-    // Verifica se o jogo acabou
     if (room.currentQuestionIndex >= room.questions.length) {
         endGame(roomCode);
         return;
     }
 
     room.gameState = 'showingQuestion';
-    room.answers = {}; // Limpa as respostas da rodada
+    room.answers = {};
     room.questionStartTime = Date.now();
     const currentQuestion = room.questions[room.currentQuestionIndex];
 
-    // Fase 1: Mostrar a pergunta por 5 segundos
+    // Envia o objeto completo da questão (questionData) para o cliente renderizar silogismos
     io.to(roomCode).emit('gameStateUpdate', {
         gameState: 'showingQuestion',
-        questionText: currentQuestion.text,
-        questionIndex: room.currentQuestionIndex, // Envia o índice atual
-        totalQuestions: room.questions.length,   // Envia o total
+        questionData: currentQuestion, // O cliente usa isso para mostrar premissas
+        questionText: currentQuestion.text, // Fallback simples
+        questionIndex: room.currentQuestionIndex,
+        totalQuestions: room.questions.length,
         timer: PREPARE_TIME_SECONDS
     });
 
@@ -99,9 +83,9 @@ function startAnsweringPhase(roomCode) {
     const currentQuestion = room.questions[room.currentQuestionIndex];
     const totalPlayers = room.players.filter(p => p.id !== room.hostId).length;
     
-    // Fase 2: Aceitar respostas por 30 segundos
     io.to(roomCode).emit('gameStateUpdate', {
         gameState: 'acceptingAnswers',
+        questionData: currentQuestion,
         questionText: currentQuestion.text,
         options: currentQuestion.options,
         questionIndex: room.currentQuestionIndex,
@@ -132,34 +116,34 @@ function showResults(roomCode) {
 
         let pointsThisRound = 0;
         const playerAnswerData = room.answers[player.id];
-        
-        // CORREÇÃO DEFENSIVA: Garante que as variáveis de tempo são números.
-        
 
         if (playerAnswerData && playerAnswerData.answerIndex === currentQuestion.correctAnswerIndex) {
             correctCount++;
             player.correctAnswers++;
+            
             let speedPoints = 0;
             if (room.gameOptions.scoreType === 'speed') {
-                // Cálculo por velocidade (o que já tínhamos)
                 const timeTaken = (playerAnswerData.submissionTime - room.questionStartTime) / 1000;
                 const totalTimeAvailable = QUESTION_TIME_SECONDS + 5;
                 const timeRatio = Math.max(0, 1 - (timeTaken / totalTimeAvailable));
                 speedPoints = Math.round(POINTS_PER_ANSWER * timeRatio);
-            } else { // scoreType === 'correct'
-                // Pontos fixos por acerto
+            } else { 
                 speedPoints = POINTS_PER_ANSWER;
             }
 
             player.streak++;
-            if (player.streak > player.bestStreak) player.bestStreak = player.streak;
+            // CORREÇÃO: Lógica de Best Streak
+            if (player.streak > player.bestStreak) {
+                player.bestStreak = player.streak;
+            }
+
             const streakBonusPoints = (player.streak - 1) * STREAK_BONUS;
             pointsThisRound = speedPoints + streakBonusPoints;
             player.score = (player.score || 0) + pointsThisRound;
         } else {
             incorrectCount++;
             player.wrongAnswers++;
-            player.streak = 0;
+            player.streak = 0; // Reseta o streak atual
         }
 
         roundRanking.push({
@@ -173,7 +157,6 @@ function showResults(roomCode) {
             wrongAnswers: player.wrongAnswers
         });
     });
-
     
     roundRanking.sort((a, b) => b.totalScore - a.totalScore);
     let finalRanking = roundRanking;
@@ -188,13 +171,16 @@ function showResults(roomCode) {
         incorrectCount: incorrectCount
     };
 
-    // Lógica para enviar payload personalizado (sem mudanças)
     room.players.forEach(player => {
         let personalPayload = {
             gameState: 'showingResults',
             results: results,
             options: currentQuestion.options,
-            ranking: finalRanking
+            ranking: finalRanking,
+            // Envia as opções de visualização para o cliente
+            showRankingConfig: room.gameOptions.showRanking,
+            showExplanationConfig: room.gameOptions.showExplanation,
+            questionData: currentQuestion // Envia dados da questão para mostrar a explicação
         };
         if (player.id !== room.hostId) {
             const playerAnswerData = room.answers[player.id];
@@ -202,7 +188,7 @@ function showResults(roomCode) {
         }
         io.to(player.id).emit('gameStateUpdate', personalPayload);
     });
-    console.log(`[${roomCode}] Mostrando resultados. Acertos: ${correctCount}, Erros: ${incorrectCount}`);
+    console.log(`[${roomCode}] Mostrando resultados.`);
 }
 
 function endGame(roomCode) {
@@ -218,12 +204,11 @@ function endGame(roomCode) {
     io.to(roomCode).emit('gameStateUpdate', {
         gameState: 'endGame',
         showRanking: room.gameOptions.showRanking,
-        finalRanking: finalRanking, 
-        playedQuestions: room.questions
+        finalRanking: finalRanking,
+        playedQuestions: room.questions 
     });
     console.log(`[${roomCode}] Jogo finalizado.`);
 }
-// ======================================
 
 io.on('connection', (socket) => {
     console.log(`[CONECTADO] Novo socket: ${socket.id}`);
@@ -355,15 +340,18 @@ io.on('connection', (socket) => {
         console.log(`[CONECTADO] Usuário ${socket.id} definiu o nickname como: ${nickname}`);
     });
 
-    socket.on('createRoom', ({ nickname, gameOptions }) => {
+    socket.on('createRoom', ({ nickname, gameOptions, customQuestions }) => {
         const gameNickname = nickname || 'Host Anônimo';
         const email = socket.email || null;
-        console.log(`Host criando sala com nickname de JOGO: ${gameNickname}, Email: ${email}`);
-
         const roomCode = generateRoomCode();
+
+        // Define as questões: Usa as customizadas se enviadas, senão fallback
+        let questionsToUse = (customQuestions && customQuestions.length > 0) 
+                             ? customQuestions 
+                             : fallbackQuestions;
+
         rooms[roomCode] = {
             hostId: socket.id,
-            
             players: [{ 
                 id: socket.id, 
                 nickname: gameNickname, 
@@ -371,71 +359,48 @@ io.on('connection', (socket) => {
                 score: 0, 
                 streak: 0, 
                 correctAnswers: 0,
-                wrongAnswers: 0
+                wrongAnswers: 0,
+                bestStreak: 0 // CORREÇÃO: Inicialização explícita
             }],
-            
             gameState: 'lobby',
-            questions: gameQuestions,
+            questions: questionsToUse,
             currentQuestionIndex: -1,
             gameOptions: {
-                // Lógica defensiva para definir os valores padrão
                 showRanking: gameOptions ? gameOptions.showRanking !== false : true,
+                // NOVA OPÇÃO: Mostrar explicação
+                showExplanation: gameOptions ? gameOptions.showExplanation === true : false, 
                 scoreType: gameOptions ? gameOptions.scoreType || 'speed' : 'speed'
             }
         };
         socket.join(roomCode);
         
-        // Envia a resposta para o Host com o ID do Host incluído
         socket.emit('roomCreated', { 
             roomCode: roomCode, 
             players: rooms[roomCode].players,
             hostId: rooms[roomCode].hostId
         });
         
-        console.log(`Sala ${roomCode} criada pelo Host ${nickname}.`);
-        console.log(`[DEBUG] Criada sala ${roomCode} com hostId = ${rooms[roomCode].hostId}`);
+        console.log(`Sala ${roomCode} criada. Questões: ${questionsToUse.length}`);
     });
 
     socket.on('joinRoom', ({ roomCode, nickname }) => {
         const room = rooms[roomCode];
-        const gameNickname = nickname || 'Jogador Anonimo';
-        const email = socket.email || null;
+        if (!room) { socket.emit('joinError', 'Código inválido.'); return; }
+        if (room.gameState !== 'lobby') { socket.emit('joinError', 'Jogo já começou.'); return; }
 
-        // Caso 1: Sala não existe
-        if (!room) {
-            // Responde APENAS ao jogador que tentou entrar com um erro específico
-            socket.emit('joinError', 'Código da sala inválido.');
-            return;
-        }
-
-        // Caso 2: Jogo já começou
-        if (room.gameState !== 'lobby') {
-            socket.emit('joinError', 'Este jogo já começou. Não é possível entrar.');
-            return;
-        }
-
-        // Caso 3: Sucesso!
         room.players.push({ 
             id: socket.id, 
-            nickname: gameNickname, 
-            email: email, 
+            nickname: nickname || 'Jogador', 
+            email: socket.email || null, 
             score: 0, 
             streak: 0, 
             correctAnswers: 0, 
-            wrongAnswers: 0 
+            wrongAnswers: 0,
+            bestStreak: 0 // CORREÇÃO: Inicialização explícita
         });
         socket.join(roomCode);
-        
-        // Responde APENAS ao jogador com uma confirmação de sucesso
-        socket.emit('joinSuccess', { 
-            roomCode: roomCode, 
-            players: room.players,
-            hostId: room.hostId
-        });
-        
-        // Avisa a TODOS OS OUTROS jogadores na sala que um novo jogador entrou
+        socket.emit('joinSuccess', { roomCode: roomCode, players: room.players, hostId: room.hostId });
         socket.to(roomCode).emit('updatePlayerList', room.players);
-        console.log(`Jogador ${gameNickname} (Email: ${email}) entrou na sala ${roomCode}.`);
     });
 
     // ===== NOVO EVENTO: host:kickPlayer =====
@@ -483,42 +448,29 @@ io.on('connection', (socket) => {
     });
 
     socket.on('guest:submitAnswer', ({ roomCode, answerIndex }) => {
-        const room = rooms[roomCode];
-        // Garante que a mesma pessoa não responda duas vezes
-        if (room && room.gameState === 'acceptingAnswers' && !room.answers[socket.id]) {
-            room.answers[socket.id] = { answerIndex: answerIndex, submissionTime: Date.now() };
-
-            const guestCount = room.players.length - 1;
-            const answersCount = Object.keys(room.answers).length;
-            const currentQuestion = room.questions[room.currentQuestionIndex];
-
-            // NOVA FEATURE: Envia uma atualização do contador APENAS para o host
-            io.to(room.hostId).emit('gameStateUpdate', {
-                gameState: 'acceptingAnswers', // Mantém o mesmo estado
-                answeredCount: answersCount,
-                totalPlayers: guestCount,
-                questionText: currentQuestion.text,
-                options: currentQuestion.options, // Mesmo que o host não mostre, é bom para consistência
-                questionIndex: room.currentQuestionIndex,
-                totalQuestions: room.questions.length
-            });
-
-            console.log(`[${roomCode}] Resposta recebida. ${answersCount}/${guestCount} responderam.`);
-
-            if (answersCount >= guestCount) {
-                showResults(roomCode);
-            }
-        }
+         const room = rooms[roomCode];
+         if (room && room.gameState === 'acceptingAnswers' && !room.answers[socket.id]) {
+             room.answers[socket.id] = { answerIndex: answerIndex, submissionTime: Date.now() };
+             // ... lógica de contagem e auto-avanço ...
+             const guestCount = room.players.length - 1;
+             if (Object.keys(room.answers).length >= guestCount) showResults(roomCode);
+             else {
+                // Atualiza contador para host
+                 io.to(room.hostId).emit('gameStateUpdate', {
+                    gameState: 'acceptingAnswers',
+                    answeredCount: Object.keys(room.answers).length,
+                    totalPlayers: guestCount,
+                    // Mantém dados consistentes
+                    questionText: room.questions[room.currentQuestionIndex].text,
+                    questionData: room.questions[room.currentQuestionIndex], 
+                    options: room.questions[room.currentQuestionIndex].options,
+                    questionIndex: room.currentQuestionIndex,
+                    totalQuestions: room.questions.length
+                });
+             }
+         }
     });
-
-    socket.on('host:skipWait', (roomCode) => {
-        const room = rooms[roomCode];
-        // Garante que apenas o host pode pular e apenas durante a fase de respostas
-        if (room && room.hostId === socket.id && room.gameState === 'acceptingAnswers') {
-            console.log(`[${roomCode}] Host pulou a espera.`);
-            showResults(roomCode); // Chama a função de resultados imediatamente
-        }
-    });
+    socket.on('host:skipWait', (roomCode) => { if(rooms[roomCode]) showResults(roomCode); });
     
     socket.on('disconnect', () => {
         console.log(`[DESCONECTADO] Usuário com ID: ${socket.id}`);
