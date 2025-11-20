@@ -34,10 +34,11 @@ const PREPARE_TIME_SECONDS = 5;
 // Perguntas de fallback caso o host não envie nada (apenas para teste)
 const fallbackQuestions = [
     {
-        text: "Aguardando o Host configurar as questões...",
-        options: ["..."],
-        correctAnswerIndex: 0,
-        syllogism: {}
+        instruction: "Teste de Conexão",
+        text: "Aguardando o Host...",
+        options: ["Opção A", "Opção B"],
+        correctAnswerIndices: [0],
+        syllogismData: {}
     }
 ];
 
@@ -61,17 +62,18 @@ function advanceToNextQuestion(roomCode) {
     room.questionStartTime = Date.now();
     const currentQuestion = room.questions[room.currentQuestionIndex];
 
-    // Envia o objeto completo da questão (questionData) para o cliente renderizar silogismos
     io.to(roomCode).emit('gameStateUpdate', {
         gameState: 'showingQuestion',
-        questionData: currentQuestion, // O cliente usa isso para mostrar premissas
-        questionText: currentQuestion.text, // Fallback simples
+        questionData: currentQuestion, 
+        questionText: currentQuestion.text,
+        // Envia a instrução nova (Choose correct...)
+        instruction: currentQuestion.instruction, 
         questionIndex: room.currentQuestionIndex,
         totalQuestions: room.questions.length,
         timer: PREPARE_TIME_SECONDS
     });
 
-    console.log(`[${roomCode}] Mostrando pergunta ${room.currentQuestionIndex + 1}`);
+    console.log(`[${roomCode}] Pergunta ${room.currentQuestionIndex + 1}`);
     room.timer = setTimeout(() => startAnsweringPhase(roomCode), PREPARE_TIME_SECONDS * 1000);
 }
 
@@ -87,6 +89,7 @@ function startAnsweringPhase(roomCode) {
         gameState: 'acceptingAnswers',
         questionData: currentQuestion,
         questionText: currentQuestion.text,
+        instruction: currentQuestion.instruction, // Envia instrução
         options: currentQuestion.options,
         questionIndex: room.currentQuestionIndex,
         totalQuestions: room.questions.length,
@@ -95,7 +98,7 @@ function startAnsweringPhase(roomCode) {
         totalPlayers: totalPlayers
     });
 
-    console.log(`[${roomCode}] Aceitando respostas por ${QUESTION_TIME_SECONDS}s.`);
+    console.log(`[${roomCode}] Valendo!`);
     room.timer = setTimeout(() => showResults(roomCode), QUESTION_TIME_SECONDS * 1000);
 }
 
@@ -106,6 +109,10 @@ function showResults(roomCode) {
 
     room.gameState = 'showingResults';
     const currentQuestion = room.questions[room.currentQuestionIndex];
+    // Garante que correctIndices seja array (compatibilidade com versões antigas ou fallback)
+    const correctIndices = Array.isArray(currentQuestion.correctAnswerIndices) 
+        ? currentQuestion.correctAnswerIndices 
+        : [currentQuestion.correctAnswerIndex]; 
 
     let roundRanking = [];
     let correctCount = 0;
@@ -116,8 +123,24 @@ function showResults(roomCode) {
 
         let pointsThisRound = 0;
         const playerAnswerData = room.answers[player.id];
+        
+        let isCorrect = false;
 
-        if (playerAnswerData && playerAnswerData.answerIndex === currentQuestion.correctAnswerIndex) {
+        if (playerAnswerData) {
+            const playerIndices = playerAnswerData.answerIndices || []; // Lista enviada pelo cliente
+            
+            // Lógica Estrita: Deve conter TODOS os índices corretos e NENHUM incorreto
+            // 1. Verifica se tamanhos batem
+            if (playerIndices.length === correctIndices.length) {
+                // 2. Verifica se todos os índices do jogador estão na lista de corretos
+                const allMatch = playerIndices.every(idx => correctIndices.includes(idx));
+                if (allMatch) {
+                    isCorrect = true;
+                }
+            }
+        }
+
+        if (isCorrect) {
             correctCount++;
             player.correctAnswers++;
             
@@ -132,7 +155,7 @@ function showResults(roomCode) {
             }
 
             player.streak++;
-            // CORREÇÃO: Lógica de Best Streak
+            // CORREÇÃO do Streak
             if (player.streak > player.bestStreak) {
                 player.bestStreak = player.streak;
             }
@@ -143,7 +166,7 @@ function showResults(roomCode) {
         } else {
             incorrectCount++;
             player.wrongAnswers++;
-            player.streak = 0; // Reseta o streak atual
+            player.streak = 0; 
         }
 
         roundRanking.push({
@@ -159,36 +182,40 @@ function showResults(roomCode) {
     });
     
     roundRanking.sort((a, b) => b.totalScore - a.totalScore);
-    let finalRanking = roundRanking;
+    let finalRanking = room.gameOptions.showRanking ? roundRanking : [];
 
-    if(!room.gameOptions.showRanking){
-        finalRanking = [];
-    }
-    
     const results = { 
-        correctAnswerIndex: currentQuestion.correctAnswerIndex,
+        correctAnswerIndices: correctIndices, // Envia lista
         correctCount: correctCount,
         incorrectCount: incorrectCount
     };
 
     room.players.forEach(player => {
+        let playerResult = 'incorrect';
+        if (player.id !== room.hostId) {
+             // Recalcula status local para enviar 'correct'/'incorrect' ao cliente
+             const ans = room.answers[player.id];
+             if (ans) {
+                 const pIndices = ans.answerIndices || [];
+                 if (pIndices.length === correctIndices.length && pIndices.every(i => correctIndices.includes(i))) {
+                     playerResult = 'correct';
+                 }
+             }
+        }
+
         let personalPayload = {
             gameState: 'showingResults',
             results: results,
             options: currentQuestion.options,
             ranking: finalRanking,
-            // Envia as opções de visualização para o cliente
             showRankingConfig: room.gameOptions.showRanking,
             showExplanationConfig: room.gameOptions.showExplanation,
-            questionData: currentQuestion // Envia dados da questão para mostrar a explicação
+            questionData: currentQuestion,
+            playerResult: playerResult // Adicionado ao payload
         };
-        if (player.id !== room.hostId) {
-            const playerAnswerData = room.answers[player.id];
-            personalPayload.playerResult = (playerAnswerData && playerAnswerData.answerIndex === currentQuestion.correctAnswerIndex) ? 'correct' : 'incorrect';
-        }
         io.to(player.id).emit('gameStateUpdate', personalPayload);
     });
-    console.log(`[${roomCode}] Mostrando resultados.`);
+    console.log(`[${roomCode}] Resultados. Acertos: ${correctCount}`);
 }
 
 function endGame(roomCode) {
@@ -447,21 +474,22 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('guest:submitAnswer', ({ roomCode, answerIndex }) => {
+    socket.on('guest:submitAnswer', ({ roomCode, answerIndices }) => { // Mudou de answerIndex para answerIndices
          const room = rooms[roomCode];
          if (room && room.gameState === 'acceptingAnswers' && !room.answers[socket.id]) {
-             room.answers[socket.id] = { answerIndex: answerIndex, submissionTime: Date.now() };
-             // ... lógica de contagem e auto-avanço ...
+             // Salva a lista de índices
+             room.answers[socket.id] = { answerIndices: answerIndices, submissionTime: Date.now() };
+             
              const guestCount = room.players.length - 1;
              if (Object.keys(room.answers).length >= guestCount) showResults(roomCode);
              else {
-                // Atualiza contador para host
+                // Atualiza host
                  io.to(room.hostId).emit('gameStateUpdate', {
                     gameState: 'acceptingAnswers',
                     answeredCount: Object.keys(room.answers).length,
                     totalPlayers: guestCount,
-                    // Mantém dados consistentes
                     questionText: room.questions[room.currentQuestionIndex].text,
+                    instruction: room.questions[room.currentQuestionIndex].instruction,
                     questionData: room.questions[room.currentQuestionIndex], 
                     options: room.questions[room.currentQuestionIndex].options,
                     questionIndex: room.currentQuestionIndex,
