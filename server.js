@@ -28,9 +28,8 @@ let rooms = {};
 
 const POINTS_PER_ANSWER = 1000;
 const STREAK_BONUS = 20;
-const QUESTION_TIME_SECONDS = 30;
+const DEFAULT_QUESTION_TIME = 30; // Renomeado para evitar confusão
 const PREPARE_TIME_SECONDS = 5;
-const questionTime = gameOptions.questionTime || QUESTION_TIME_SECONDS;
 
 // Perguntas de fallback caso o host não envie nada (apenas para teste)
 const fallbackQuestions = [
@@ -74,7 +73,42 @@ function advanceToNextQuestion(roomCode) {
     });
 
     console.log(`[${roomCode}] Pergunta ${room.currentQuestionIndex + 1}`);
-    room.timer = setTimeout(() => startAnsweringPhase(roomCode), PREPARE_TIME_SECONDS * 1000);
+    // Inicia a fase de preparação (leitura da pergunta)
+    startPrepareTimer(roomCode); 
+}
+
+function startPrepareTimer(roomCode) {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    room.gameState = 'prepare'; // Estado intermediário opcional, ou mantém showingQuestion
+    room.timerValue = PREPARE_TIME_SECONDS; 
+    
+    // Emite o tempo inicial IMEDIATAMENTE para não aparecer zerado
+    io.to(roomCode).emit('gameStateUpdate', {
+        gameState: 'showingQuestion', // Mantém o estado visual de leitura
+        timer: room.timerValue,
+        // Reenvia dados essenciais caso o cliente precise redesenhar
+        questionText: room.questions[room.currentQuestionIndex].text,
+        instruction: room.questions[room.currentQuestionIndex].instruction, 
+    });
+
+    room.timer = setInterval(() => {
+        room.timerValue--;
+        if (room.timerValue <= 0) {
+            clearInterval(room.timer);
+            startAnsweringPhase(roomCode); // Vai para a fase de resposta
+        } else {
+            // Emite apenas a atualização do timer para economizar banda
+            io.to(roomCode).emit('timerUpdate', room.timerValue); 
+            // Nota: Se o cliente não tiver um listener específico para 'timerUpdate', 
+            // você pode usar gameStateUpdate com apenas o campo timer.
+             io.to(roomCode).emit('gameStateUpdate', { 
+                 timer: room.timerValue,
+                 gameState: 'showingQuestion' // Confirma o estado
+             });
+        }
+    }, 1000);
 }
 
 function startAnsweringPhase(roomCode) {
@@ -85,31 +119,50 @@ function startAnsweringPhase(roomCode) {
     const currentQuestion = room.questions[room.currentQuestionIndex];
     const totalPlayers = room.players.filter(p => p.id !== room.hostId).length;
     
+    // Define o tempo da questão baseado nas opções da sala
+    const timeLimit = room.gameOptions.questionTime || DEFAULT_QUESTION_TIME;
+    room.timerValue = timeLimit;
+
     io.to(roomCode).emit('gameStateUpdate', {
         gameState: 'acceptingAnswers',
         questionData: currentQuestion,
         questionText: currentQuestion.text,
-        instruction: currentQuestion.instruction, // Envia instrução
+        instruction: currentQuestion.instruction, 
         options: currentQuestion.options,
         questionIndex: room.currentQuestionIndex,
         totalQuestions: room.questions.length,
-        timer: QUESTION_TIME_SECONDS,
+        timer: room.timerValue, // Tempo correto
         answeredCount: 0,
         totalPlayers: totalPlayers
     });
 
-    console.log(`[${roomCode}] Valendo!`);
-    room.timer = setTimeout(() => showResults(roomCode), QUESTION_TIME_SECONDS * 1000);
+    console.log(`[${roomCode}] Valendo! Tempo: ${timeLimit}s`);
+
+    // Timer da fase de resposta
+    room.timer = setInterval(() => {
+        room.timerValue--;
+        if (room.timerValue <= 0) {
+            clearInterval(room.timer);
+            showResults(roomCode);
+        } else {
+            io.to(roomCode).emit('timerUpdate', room.timerValue);
+            // Fallback compatível
+            io.to(roomCode).emit('gameStateUpdate', { 
+                 timer: room.timerValue,
+                 gameState: 'acceptingAnswers'
+             });
+        }
+    }, 1000);
 }
 
 function showResults(roomCode) {
     const room = rooms[roomCode];
     if (!room || room.gameState === 'showingResults') return;
-    if (room.timer) clearTimeout(room.timer);
+    if (room.timer) clearInterval(room.timer); // Alterado para clearInterval pois agora usamos setInterval
 
     room.gameState = 'showingResults';
     const currentQuestion = room.questions[room.currentQuestionIndex];
-    // Garante que correctIndices seja array (compatibilidade com versões antigas ou fallback)
+    
     const correctIndices = Array.isArray(currentQuestion.correctAnswerIndices) 
         ? currentQuestion.correctAnswerIndices 
         : [currentQuestion.correctAnswerIndex]; 
@@ -117,6 +170,7 @@ function showResults(roomCode) {
     let roundRanking = [];
     let correctCount = 0;
     let incorrectCount = 0;
+    const timeLimit = room.gameOptions.questionTime || DEFAULT_QUESTION_TIME;
 
     room.players.forEach(player => {
         if (player.id === room.hostId) return;
@@ -127,16 +181,10 @@ function showResults(roomCode) {
         let isCorrect = false;
 
         if (playerAnswerData) {
-            const playerIndices = playerAnswerData.answerIndices || []; // Lista enviada pelo cliente
-            
-            // Lógica Estrita: Deve conter TODOS os índices corretos e NENHUM incorreto
-            // 1. Verifica se tamanhos batem
+            const playerIndices = playerAnswerData.answerIndices || []; 
             if (playerIndices.length === correctIndices.length) {
-                // 2. Verifica se todos os índices do jogador estão na lista de corretos
                 const allMatch = playerIndices.every(idx => correctIndices.includes(idx));
-                if (allMatch) {
-                    isCorrect = true;
-                }
+                if (allMatch) isCorrect = true;
             }
         }
 
@@ -147,7 +195,8 @@ function showResults(roomCode) {
             let speedPoints = 0;
             if (room.gameOptions.scoreType === 'speed') {
                 const timeTaken = (playerAnswerData.submissionTime - room.questionStartTime) / 1000;
-                const totalTimeAvailable = QUESTION_TIME_SECONDS + 5;
+                // Ajuste no cálculo de tempo para usar o tempo configurado da sala
+                const totalTimeAvailable = timeLimit + PREPARE_TIME_SECONDS; 
                 const timeRatio = Math.max(0, 1 - (timeTaken / totalTimeAvailable));
                 speedPoints = Math.round(POINTS_PER_ANSWER * timeRatio);
             } else { 
@@ -155,7 +204,6 @@ function showResults(roomCode) {
             }
 
             player.streak++;
-            // CORREÇÃO do Streak
             if (player.streak > player.bestStreak) {
                 player.bestStreak = player.streak;
             }
@@ -185,7 +233,7 @@ function showResults(roomCode) {
     let finalRanking = room.gameOptions.showRanking ? roundRanking : [];
 
     const results = { 
-        correctAnswerIndices: correctIndices, // Envia lista
+        correctAnswerIndices: correctIndices, 
         correctCount: correctCount,
         incorrectCount: incorrectCount
     };
@@ -193,7 +241,6 @@ function showResults(roomCode) {
     room.players.forEach(player => {
         let playerResult = 'incorrect';
         if (player.id !== room.hostId) {
-             // Recalcula status local para enviar 'correct'/'incorrect' ao cliente
              const ans = room.answers[player.id];
              if (ans) {
                  const pIndices = ans.answerIndices || [];
@@ -211,37 +258,19 @@ function showResults(roomCode) {
             showRankingConfig: room.gameOptions.showRanking,
             showExplanationConfig: room.gameOptions.showExplanation,
             questionData: currentQuestion,
-            playerResult: playerResult // Adicionado ao payload
+            playerResult: playerResult 
         };
         io.to(player.id).emit('gameStateUpdate', personalPayload);
     });
     console.log(`[${roomCode}] Resultados. Acertos: ${correctCount}`);
 }
 
-function startPrepareTimer(roomCode) {
-    const room = rooms[roomCode];
-    room.gameState = 'prepare';
-    room.timerValue = 5; // Reinicia para 5
-    
-    io.to(roomCode).emit('gameStateUpdate', {
-        gameState: 'prepare',
-        timerValue: room.timerValue,
-    });
-
-    room.timer = setInterval(() => {
-        room.timerValue--;
-        if (room.timerValue <= 0) {
-            clearInterval(room.timer);
-            startQuestionTimer(roomCode);
-        } else {
-            io.to(roomCode).emit('timerUpdate', room.timerValue);
-        }
-    }, 1000);
-}
-
 function endGame(roomCode) {
     const room = rooms[roomCode];
     if (!room) return;
+    
+    if (room.timer) clearInterval(room.timer); // Limpa qualquer timer pendente
+
     room.gameState = 'endGame';
     
     const finalRanking = room.players
@@ -260,50 +289,39 @@ function endGame(roomCode) {
 
 io.on('connection', (socket) => {
     console.log(`[CONECTADO] Novo socket: ${socket.id}`);
-    socket.on('user:authenticate', async (token) => {
+    
+    // ... (Bloco de autenticação user:authenticate permanece igual) ...
+     socket.on('user:authenticate', async (token) => {
         try {
             const decodedToken = await admin.auth().verifyIdToken(token);
             socket.uid = decodedToken.uid;
+            socket.email = decodedToken.email || null; 
             
-            // ** ARMAZENA O EMAIL COMPLETO NO SOCKET **
-            socket.email = decodedToken.email || null; // Guarda o email completo
-            
-            // LÓGICA DE PRIORIDADE DO NICKNAME (PARA EXIBIÇÃO)
-            let nicknameToUse = 'Anônimo'; // Fallback
+            let nicknameToUse = 'Anônimo'; 
             const provider = decodedToken.firebase.sign_in_provider;
             
             if (provider === 'google.com') {
-                // Login Google: Prioriza nome do Google, senão parte antes do @ do email
                 if (decodedToken.name) {
                     nicknameToUse = decodedToken.name;
-                } else if (socket.email) { // Usa o email armazenado
+                } else if (socket.email) { 
                     nicknameToUse = socket.email.split('@')[0];
                 }
             } else if (provider === 'password') {
-                // Login Email/Senha: Usa parte antes do @ do email
-                if (socket.email) { // Usa o email armazenado
+                if (socket.email) { 
                     nicknameToUse = socket.email.split('@')[0];
                 }
             } else if (provider === 'anonymous') {
                 nicknameToUse = 'Anônimo';
-            } 
-            else {
-                // Outros logins: Tenta nome, senão parte antes do @ do email
+            } else {
                 if (decodedToken.name) {
                     nicknameToUse = decodedToken.name;
-                } else if (socket.email) { // Usa o email armazenado
+                } else if (socket.email) { 
                     nicknameToUse = socket.email.split('@')[0];
                 }
             }
             
-            // Armazena o NICKNAME (para exibição) no socket
             socket.nickname = nicknameToUse;
-            
-            // ==========================================
-
-            console.log(`[AUTH] Usuário ${socket.nickname} (Email: ${socket.email || 'N/A'}, UID: ${socket.uid}) autenticado.`);
-            
-            // Envia o nickname para o cliente (não precisa enviar o email)
+            console.log(`[AUTH] Usuário ${socket.nickname} autenticado.`);
             socket.emit('auth:success', { uid: socket.uid, nickname: socket.nickname });
 
         } catch (error) {
@@ -313,85 +331,43 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('host:endGame', (roomCode) => {
-        if (rooms[roomCode] && rooms[roomCode].hostId === socket.id) {
-            showResults(roomCode);
-        }
-    });
-
-    // ===== 2. LÓGICA DE CHAT POR TÓPICO =====
+    // ===== 2. LÓGICA DE CHAT POR TÓPICO (Permanece igual) =====
     socket.on('chat:joinTopic', async (topic) => {
-        if (!socket.uid) return; // Ignore se não estiver autenticado
-
+        if (!socket.uid) return; 
         const topicRoomName = `topic_${topic}`;
         socket.join(topicRoomName);
-        console.log(`[CHAT] ${socket.nickname} entrou no tópico: ${topic}`);
-
-        // ** CARREGAR HISTÓRICO **
         try {
             const messagesRef = db.collection('chats').doc(topic).collection('messages');
             const snapshot = await messagesRef.orderBy('timestamp', 'desc').limit(50).get();
-
-            if (snapshot.empty) {
-                socket.emit('chat:history', []); // Envia histórico vazio
-                return;
-            }
-
-            const history = snapshot.docs.map(doc => doc.data()).reverse(); // Inverte para ordem cronológica
-            socket.emit('chat:history', history); // Envia o histórico SÓ PARA ESTE USUÁRIO
-
-        } catch (error) {
-            console.log(`[HISTÓRICO ERRO] Falha ao buscar histórico: ${error.message}`);
-        }
+            if (snapshot.empty) { socket.emit('chat:history', []); return; }
+            const history = snapshot.docs.map(doc => doc.data()).reverse(); 
+            socket.emit('chat:history', history); 
+        } catch (error) { console.log(`[HISTÓRICO ERRO]: ${error.message}`); }
     });
 
     socket.on('chat:leaveTopic', (topic) => {
         if (!socket.uid) return;
         const topicRoomName = `topic_${topic}`;
         socket.leave(topicRoomName);
-        console.log(`[CHAT] ${socket.nickname} saiu do tópico: ${topic}`);
     });
 
     socket.on('chat:sendMessage', async ({ topic, message }) => {
-        if (!socket.uid) return; // Não autenticado
-
-        // ** 1. SANITIZAR A MENSAGEM (SEGURANÇA) **
-        const sanitizedMessage = sanitizeHtml(message, {
-            allowedTags: [], // Remove TODAS as tags HTML
-            allowedAttributes: {}
-        });
-
-        if (sanitizedMessage.trim().length === 0) return; // Ignora mensagens vazias
-
-        // ** 2. PREPARAR O PAYLOAD **
+        if (!socket.uid) return; 
+        const sanitizedMessage = sanitizeHtml(message, { allowedTags: [], allowedAttributes: {} });
+        if (sanitizedMessage.trim().length === 0) return; 
         const chatPayload = {
             senderId: socket.uid,
-            senderNickname: socket.nickname, // Nickname para exibição
-            senderEmail: socket.email,      // Email completo para armazenamento
+            senderNickname: socket.nickname, 
+            senderEmail: socket.email,      
             message: sanitizedMessage,
             topic: topic,
             timestamp: admin.firestore.FieldValue.serverTimestamp()
         };
-
-        // ** 3. SALVAR NO FIREBASE **
         try {
             const docRef = await db.collection('chats').doc(topic).collection('messages').add(chatPayload);
-            console.log(`[CHAT DB] Mensagem ${docRef.id} salva.`);
-
-            // ** 4. TRANSMITIR PARA A SALA **
-            // (Precisamos ler o documento salvo para obter o timestamp real)
             const finalPayload = (await docRef.get()).data();
             io.to(`topic_${topic}`).emit('server:newMessage', finalPayload);
-
-        } catch (error) {
-            console.log(`[CHAT DB ERRO] Falha ao salvar mensagem: ${error.message}`);
-        }
-    });
-
-    socket.on('user:setNickname', (nickname) => {
-        // Armazena o nickname no próprio socket para uso posterior
-        socket.nickname = nickname; 
-        console.log(`[CONECTADO] Usuário ${socket.id} definiu o nickname como: ${nickname}`);
+        } catch (error) { console.log(`[CHAT DB ERRO]: ${error.message}`); }
     });
 
     socket.on('createRoom', ({ nickname, gameOptions, customQuestions }) => {
@@ -399,10 +375,18 @@ io.on('connection', (socket) => {
         const email = socket.email || null;
         const roomCode = generateRoomCode();
 
-        // Define as questões: Usa as customizadas se enviadas, senão fallback
         let questionsToUse = (customQuestions && customQuestions.length > 0) 
                              ? customQuestions 
                              : fallbackQuestions;
+
+        // VALIDAÇÃO E CONFIGURAÇÃO DO GAME OPTIONS
+        const options = {
+            showRanking: gameOptions ? gameOptions.showRanking !== false : true,
+            showExplanation: gameOptions ? gameOptions.showExplanation === true : false, 
+            scoreType: gameOptions ? gameOptions.scoreType || 'speed' : 'speed',
+            // Adicionado suporte ao tempo personalizado (com fallback)
+            questionTime: (gameOptions && gameOptions.questionTime) ? parseInt(gameOptions.questionTime) : DEFAULT_QUESTION_TIME
+        };
 
         rooms[roomCode] = {
             hostId: socket.id,
@@ -414,17 +398,12 @@ io.on('connection', (socket) => {
                 streak: 0, 
                 correctAnswers: 0,
                 wrongAnswers: 0,
-                bestStreak: 0 // CORREÇÃO: Inicialização explícita
+                bestStreak: 0 
             }],
             gameState: 'lobby',
             questions: questionsToUse,
             currentQuestionIndex: -1,
-            gameOptions: {
-                showRanking: gameOptions ? gameOptions.showRanking !== false : true,
-                // NOVA OPÇÃO: Mostrar explicação
-                showExplanation: gameOptions ? gameOptions.showExplanation === true : false, 
-                scoreType: gameOptions ? gameOptions.scoreType || 'speed' : 'speed'
-            }
+            gameOptions: options // Armazena as opções sanitizadas
         };
         socket.join(roomCode);
         
@@ -434,7 +413,7 @@ io.on('connection', (socket) => {
             hostId: rooms[roomCode].hostId
         });
         
-        console.log(`Sala ${roomCode} criada. Questões: ${questionsToUse.length}`);
+        console.log(`Sala ${roomCode} criada. Tempo por questão: ${options.questionTime}s`);
     });
 
     socket.on('joinRoom', ({ roomCode, nickname }) => {
@@ -450,49 +429,44 @@ io.on('connection', (socket) => {
             streak: 0, 
             correctAnswers: 0, 
             wrongAnswers: 0,
-            bestStreak: 0 // CORREÇÃO: Inicialização explícita
+            bestStreak: 0 
         });
         socket.join(roomCode);
         socket.emit('joinSuccess', { roomCode: roomCode, players: room.players, hostId: room.hostId });
         socket.to(roomCode).emit('updatePlayerList', room.players);
     });
 
-    // ===== NOVO EVENTO: host:kickPlayer =====
     socket.on('host:kickPlayer', ({ roomCode, playerIdToKick }) => {
         const room = rooms[roomCode];
-        // Garante que apenas o host pode expulsar e que ele não expulse a si mesmo
         if (room && room.hostId === socket.id && playerIdToKick !== socket.id) {
-            
-            // Encontra o socket do jogador a ser expulso
             const socketToKick = io.sockets.sockets.get(playerIdToKick);
             if (socketToKick) {
-                // Envia uma mensagem para o jogador expulso
                 socketToKick.emit('kicked', 'Você foi removido da sala pelo Host.');
-                // Força a desconexão dele da sala
                 socketToKick.leave(roomCode);
             }
-            
-            // Remove o jogador da lista da sala
             room.players = room.players.filter(p => p.id !== playerIdToKick);
-            
-            // Atualiza a lista de jogadores para todos que permaneceram na sala
             io.to(roomCode).emit('updatePlayerList', room.players);
-            
             console.log(`[${roomCode}] Host expulsou o jogador ${playerIdToKick}.`);
         }
     });
+
+    // ===== COMANDO DE ENCERRAMENTO FORÇADO =====
+    socket.on('host:forceEnd', (roomCode) => { // Alterado para match com o client
+        const room = rooms[roomCode];
+        if (room && room.hostId === socket.id) {
+            console.log(`[${roomCode}] Host forçou o fim do jogo.`);
+            endGame(roomCode);
+        }
+    });
     
-    // ===== EVENTOS DE JOGO ATUALIZADOS =====
     socket.on('host:startGame', (roomCode) => {
         const room = rooms[roomCode];
         if (room && room.hostId === socket.id) {
             console.log(`[${roomCode}] Host iniciou o jogo.`);
-            // A função advanceToNextQuestion agora inicia e continua o jogo
             advanceToNextQuestion(roomCode);
         }
     });
 
-    // NOVO EVENTO para avançar para a próxima questão
     socket.on('host:nextQuestion', (roomCode) => {
         const room = rooms[roomCode];
         if (room && room.hostId === socket.id && room.gameState === 'showingResults') {
@@ -501,41 +475,36 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('guest:submitAnswer', ({ roomCode, answerIndices }) => { // Mudou de answerIndex para answerIndices
+    socket.on('guest:submitAnswer', ({ roomCode, answerIndices }) => { 
          const room = rooms[roomCode];
          if (room && room.gameState === 'acceptingAnswers' && !room.answers[socket.id]) {
-             // Salva a lista de índices
              room.answers[socket.id] = { answerIndices: answerIndices, submissionTime: Date.now() };
              
              const guestCount = room.players.length - 1;
              if (Object.keys(room.answers).length >= guestCount) showResults(roomCode);
              else {
-                // Atualiza host
                  io.to(room.hostId).emit('gameStateUpdate', {
                     gameState: 'acceptingAnswers',
                     answeredCount: Object.keys(room.answers).length,
                     totalPlayers: guestCount,
-                    questionText: room.questions[room.currentQuestionIndex].text,
-                    instruction: room.questions[room.currentQuestionIndex].instruction,
+                    // Reenvia dados contextuais
                     questionData: room.questions[room.currentQuestionIndex], 
-                    options: room.questions[room.currentQuestionIndex].options,
-                    questionIndex: room.currentQuestionIndex,
-                    totalQuestions: room.questions.length
+                    timer: room.timerValue // Mantém timer sincronizado
                 });
              }
          }
     });
+
     socket.on('host:skipWait', (roomCode) => { if(rooms[roomCode]) showResults(roomCode); });
     
     socket.on('disconnect', () => {
         console.log(`[DESCONECTADO] Usuário com ID: ${socket.id}`);
-        // Lógica de disconnect das salas de JOGO
         for (const roomCode in rooms) {
             const room = rooms[roomCode];
             const playerIndex = room.players.findIndex(p => p.id === socket.id);
             if (playerIndex !== -1) {
                 if (socket.id === room.hostId) {
-                    if (room.timer) clearTimeout(room.timer);
+                    if (room.timer) clearInterval(room.timer);
                     io.to(roomCode).emit('error', 'O Host encerrou a sala.');
                     delete rooms[roomCode];
                 } else {
