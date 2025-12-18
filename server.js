@@ -30,6 +30,7 @@ const POINTS_PER_ANSWER = 1000;
 const STREAK_BONUS = 20;
 const QUESTION_TIME_SECONDS = 30;
 const PREPARE_TIME_SECONDS = 5;
+const questionTime = gameOptions.questionTime || QUESTION_TIME_SECONDS;
 
 // Perguntas de fallback caso o host não envie nada (apenas para teste)
 const fallbackQuestions = [
@@ -66,7 +67,6 @@ function advanceToNextQuestion(roomCode) {
         gameState: 'showingQuestion',
         questionData: currentQuestion, 
         questionText: currentQuestion.text,
-        // Envia a instrução nova (Choose correct...)
         instruction: currentQuestion.instruction, 
         questionIndex: room.currentQuestionIndex,
         totalQuestions: room.questions.length,
@@ -218,6 +218,27 @@ function showResults(roomCode) {
     console.log(`[${roomCode}] Resultados. Acertos: ${correctCount}`);
 }
 
+function startPrepareTimer(roomCode) {
+    const room = rooms[roomCode];
+    room.gameState = 'prepare';
+    room.timerValue = 5; // Reinicia para 5
+    
+    io.to(roomCode).emit('gameStateUpdate', {
+        gameState: 'prepare',
+        timerValue: room.timerValue,
+    });
+
+    room.timer = setInterval(() => {
+        room.timerValue--;
+        if (room.timerValue <= 0) {
+            clearInterval(room.timer);
+            startQuestionTimer(roomCode);
+        } else {
+            io.to(roomCode).emit('timerUpdate', room.timerValue);
+        }
+    }, 1000);
+}
+
 function endGame(roomCode) {
     const room = rooms[roomCode];
     if (!room) return;
@@ -289,6 +310,12 @@ io.on('connection', (socket) => {
             console.log(`[AUTH FALHOU] ${error.message}`);
             socket.emit('auth:failed', error.message); 
             socket.disconnect(true);
+        }
+    });
+
+    socket.on('host:endGame', (roomCode) => {
+        if (rooms[roomCode] && rooms[roomCode].hostId === socket.id) {
+            showResults(roomCode);
         }
     });
 
