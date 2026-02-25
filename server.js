@@ -300,8 +300,6 @@ io.on('connection', (socket) => {
             // Armazena o NICKNAME (para exibição) no socket
             socket.nickname = nicknameToUse;
             
-            // ==========================================
-
             console.log(`[AUTH] Usuário ${socket.nickname} (Email: ${socket.email || 'N/A'}, UID: ${socket.uid}) autenticado.`);
             
             // Envia o nickname para o cliente (não precisa enviar o email)
@@ -527,6 +525,17 @@ io.on('connection', (socket) => {
          }
     });
     socket.on('host:skipWait', (roomCode) => { if(rooms[roomCode]) showResults(roomCode); });
+
+    socket.on('host:forceEndGame', (roomCode) => {
+        const room = rooms[roomCode];
+        if (room && room.hostId === socket.id) {
+            console.log(`[${roomCode}] Host encerrou o jogo antecipadamente.`);
+            
+            if (room.timer) clearTimeout(room.timer); 
+            
+            endGame(roomCode); 
+        }
+    });
     
     socket.on('disconnect', () => {
         console.log(`[DESCONECTADO] Usuário com ID: ${socket.id}`);
