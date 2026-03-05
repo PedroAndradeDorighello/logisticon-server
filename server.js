@@ -265,44 +265,21 @@ io.on('connection', (socket) => {
         try {
             const decodedToken = await admin.auth().verifyIdToken(token);
             socket.uid = decodedToken.uid;
+            socket.email = decodedToken.email || null; 
             
-            // ** ARMAZENA O EMAIL COMPLETO NO SOCKET **
-            socket.email = decodedToken.email || null; // Guarda o email completo
+            let nicknameToUse = 'Anonimous'; 
             
-            // LÓGICA DE PRIORIDADE DO NICKNAME (PARA EXIBIÇÃO)
-            let nicknameToUse = 'Anônimo'; // Fallback
-            const provider = decodedToken.firebase.sign_in_provider;
-            
-            if (provider === 'google.com') {
-                // Login Google: Prioriza nome do Google, senão parte antes do @ do email
-                if (decodedToken.name) {
-                    nicknameToUse = decodedToken.name;
-                } else if (socket.email) { // Usa o email armazenado
-                    nicknameToUse = socket.email.split('@')[0];
-                }
-            } else if (provider === 'password') {
-                // Login Email/Senha: Usa parte antes do @ do email
-                if (socket.email) { // Usa o email armazenado
-                    nicknameToUse = socket.email.split('@')[0];
-                }
-            } else if (provider === 'anonymous') {
-                nicknameToUse = 'Anônimo';
-            } 
-            else {
-                // Outros logins: Tenta nome, senão parte antes do @ do email
-                if (decodedToken.name) {
-                    nicknameToUse = decodedToken.name;
-                } else if (socket.email) { // Usa o email armazenado
-                    nicknameToUse = socket.email.split('@')[0];
-                }
+            if (decodedToken.name) {
+                nicknameToUse = decodedToken.name;
+            } else if (socket.email) {
+                // Se logou com Email/Senha, pega tudo antes do @
+                nicknameToUse = socket.email.split('@')[0];
             }
             
-            // Armazena o NICKNAME (para exibição) no socket
             socket.nickname = nicknameToUse;
             
             console.log(`[AUTH] Usuário ${socket.nickname} (Email: ${socket.email || 'N/A'}, UID: ${socket.uid}) autenticado.`);
             
-            // Envia o nickname para o cliente (não precisa enviar o email)
             socket.emit('auth:success', { uid: socket.uid, nickname: socket.nickname });
 
         } catch (error) {
