@@ -122,7 +122,7 @@ function showResults(roomCode) {
         if (player.id === room.hostId) return;
 
         let pointsThisRound = 0;
-        const playerAnswerData = room.answers[player.id];
+        const playerAnswerData = room.answers[player.uid];
         
         let isCorrect = false;
 
@@ -312,6 +312,33 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('disconnect', () => {
+        console.log(`[DESCONECTADO] Usuário com ID: ${socket.id}`);
+        for (const roomCode in rooms) {
+            const room = rooms[roomCode];
+            const playerIndex = room.players.findIndex(p => p.id === socket.id);
+            
+            if (playerIndex !== -1) {
+                if (socket.id === room.hostId) {
+                    if (room.timer) clearTimeout(room.timer);
+                    io.to(roomCode).emit('error', 'O Host encerrou a sala (Desconectado).');
+                    delete rooms[roomCode];
+                } else {
+                    // Só deleta o jogador se o jogo ainda estiver no LOBBY.
+                    // Se o jogo já começou, mantemos ele na lista para ele poder reconectar!
+                    if (room.gameState === 'lobby') {
+                        room.players.splice(playerIndex, 1);
+                        io.to(roomCode).emit('updatePlayerList', room.players);
+                    } else {
+                        console.log(`[REDE] Jogador ${socket.nickname} desconectou (Queda de rede). Aguardando reconexão...`);
+                    }
+                }
+                break;
+            }
+        }
+    });
+    
+
     socket.on('host:endGame', (roomCode) => {
         if (rooms[roomCode] && rooms[roomCode].hostId === socket.id) {
             showResults(roomCode);
@@ -439,17 +466,34 @@ io.on('connection', (socket) => {
     socket.on('joinRoom', ({ roomCode, nickname }) => {
         const room = rooms[roomCode];
         if (!room) { socket.emit('joinError', 'Código inválido.'); return; }
+        
+        // LÓGICA DE RECONEXÃO: Se o UID já estava na sala, é o celular voltando de uma queda!
+        const existingPlayer = room.players.find(p => p.uid === socket.uid);
+        if (existingPlayer) {
+            console.log(`[RECONEXÃO] Jogador ${nickname} reconectou na sala ${roomCode}`);
+            existingPlayer.id = socket.id; // Atualiza o socket para a comunicação voltar a funcionar
+            socket.join(roomCode);
+            socket.emit('joinSuccess', { roomCode: roomCode, players: room.players, hostId: room.hostId });
+            
+            // Força a tela do celular a destravar enviando o estado atual de onde o jogo parou
+            socket.emit('gameStateUpdate', {
+                gameState: room.gameState,
+                timer: room.gameState === 'acceptingAnswers' ? 15 : 5, // Um timer genérico para re-sincronizar
+                questionText: room.questions[room.currentQuestionIndex]?.text,
+                options: room.questions[room.currentQuestionIndex]?.options,
+                questionData: room.questions[room.currentQuestionIndex]
+            });
+            return;
+        }
+
         if (room.gameState !== 'lobby') { socket.emit('joinError', 'Jogo já começou.'); return; }
 
         room.players.push({ 
             id: socket.id, 
+            uid: socket.uid,
             nickname: nickname || 'Jogador', 
             email: socket.email || null, 
-            score: 0, 
-            streak: 0, 
-            correctAnswers: 0, 
-            wrongAnswers: 0,
-            bestStreak: 0 // CORREÇÃO: Inicialização explícita
+            score: 0, streak: 0, correctAnswers: 0, wrongAnswers: 0, bestStreak: 0 
         });
         socket.join(roomCode);
         socket.emit('joinSuccess', { roomCode: roomCode, players: room.players, hostId: room.hostId });
@@ -500,16 +544,21 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('guest:submitAnswer', ({ roomCode, answerIndices }) => { // Mudou de answerIndex para answerIndices
+    socket.on('guest:submitAnswer', ({ roomCode, answerIndices }) => { 
          const room = rooms[roomCode];
-         if (room && room.gameState === 'acceptingAnswers' && !room.answers[socket.id]) {
-             // Salva a lista de índices
-             room.answers[socket.id] = { answerIndices: answerIndices, submissionTime: Date.now() };
+         if (!room || room.gameState !== 'acceptingAnswers') return;
+
+         // Acha o jogador pelo UID (à prova de troca de conexões)
+         const player = room.players.find(p => p.uid === socket.uid);
+         if (!player) return;
+
+         // Usa o UID como chave no lugar do socket.id
+         if (!room.answers[player.uid]) {
+             room.answers[player.uid] = { answerIndices: answerIndices, submissionTime: Date.now() };
              
              const guestCount = room.players.length - 1;
              if (Object.keys(room.answers).length >= guestCount) showResults(roomCode);
              else {
-                // Atualiza host
                  io.to(room.hostId).emit('gameStateUpdate', {
                     gameState: 'acceptingAnswers',
                     answeredCount: Object.keys(room.answers).length,
