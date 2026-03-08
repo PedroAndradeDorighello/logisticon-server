@@ -194,14 +194,22 @@ function showResults(roomCode) {
     room.players.forEach(player => {
         let playerResult = 'incorrect';
         if (player.id !== room.hostId) {
-             // Recalcula status local para enviar 'correct'/'incorrect' ao cliente
-             const ans = room.answers[player.id];
-             if (ans) {
-                 const pIndices = ans.answerIndices || [];
-                 if (pIndices.length === correctIndices.length && pIndices.every(i => correctIndices.includes(i))) {
-                     playerResult = 'correct';
-                 }
-             }
+            const ans = room.answers[player.id];
+            if (ans) {
+                let pIndices = ans.answerIndices != null ? ans.answerIndices : [];
+                if (!Array.isArray(pIndices)) {
+                    pIndices = [pIndices];
+                }
+
+                const pIndicesNum = pIndices.map(Number);
+                const cIndicesNum = correctIndices.map(Number);
+
+                if (pIndicesNum.length === cIndicesNum.length && 
+                    pIndicesNum.every(i => cIndicesNum.includes(i))) {
+                    
+                    playerResult = 'correct';
+                }
+            }
         }
 
         let personalPayload = {
@@ -212,7 +220,7 @@ function showResults(roomCode) {
             showRankingConfig: room.gameOptions.showRanking,
             showExplanationConfig: room.gameOptions.showExplanation,
             questionData: currentQuestion,
-            playerResult: playerResult // Adicionado ao payload
+            playerResult: playerResult
         };
         io.to(player.id).emit('gameStateUpdate', personalPayload);
     });
