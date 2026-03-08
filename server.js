@@ -186,7 +186,7 @@ function showResults(roomCode) {
     let finalRanking = room.gameOptions.showRanking ? roundRanking : [];
 
     const results = { 
-        correctAnswerIndices: correctIndices, // Envia lista
+        correctAnswerIndices: correctIndices,
         correctCount: correctCount,
         incorrectCount: incorrectCount
     };
@@ -211,6 +211,7 @@ function showResults(roomCode) {
                 }
             }
         }
+        console.log(`[${roomCode}] Resultado para ${player.nickname}: ${playerResult.toUpperCase()}. Resposta: ${room.answers[player.uid] ? room.answers[player.uid].answerIndices : 'N/A'}`);
 
         let personalPayload = {
             gameState: 'showingResults',
