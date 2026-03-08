@@ -194,7 +194,7 @@ function showResults(roomCode) {
     room.players.forEach(player => {
         let playerResult = 'incorrect';
         if (player.id !== room.hostId) {
-            const ans = room.answers[player.id];
+            const ans = room.answers[player.uid];
             if (ans) {
                 let pIndices = ans.answerIndices != null ? ans.answerIndices : [];
                 if (!Array.isArray(pIndices)) {
@@ -310,8 +310,7 @@ io.on('connection', (socket) => {
                     io.to(roomCode).emit('error', 'O Host encerrou a sala (Desconectado).');
                     delete rooms[roomCode];
                 } else {
-                    // Só deleta o jogador se o jogo ainda estiver no LOBBY.
-                    // Se o jogo já começou, mantemos ele na lista para ele poder reconectar!
+
                     if (room.gameState === 'lobby') {
                         room.players.splice(playerIndex, 1);
                         io.to(roomCode).emit('updatePlayerList', room.players);
@@ -331,26 +330,24 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ===== 2. LÓGICA DE CHAT POR TÓPICO =====
     socket.on('chat:joinTopic', async (topic) => {
-        if (!socket.uid) return; // Ignore se não estiver autenticado
+        if (!socket.uid) return;
 
         const topicRoomName = `topic_${topic}`;
         socket.join(topicRoomName);
         console.log(`[CHAT] ${socket.nickname} entrou no tópico: ${topic}`);
 
-        // ** CARREGAR HISTÓRICO **
         try {
             const messagesRef = db.collection('chats').doc(topic).collection('messages');
             const snapshot = await messagesRef.orderBy('timestamp', 'desc').limit(50).get();
 
             if (snapshot.empty) {
-                socket.emit('chat:history', []); // Envia histórico vazio
+                socket.emit('chat:history', []);
                 return;
             }
 
-            const history = snapshot.docs.map(doc => doc.data()).reverse(); // Inverte para ordem cronológica
-            socket.emit('chat:history', history); // Envia o histórico SÓ PARA ESTE USUÁRIO
+            const history = snapshot.docs.map(doc => doc.data()).reverse();
+            socket.emit('chat:history', history);
 
         } catch (error) {
             console.log(`[HISTÓRICO ERRO] Falha ao buscar histórico: ${error.message}`);
@@ -365,33 +362,28 @@ io.on('connection', (socket) => {
     });
 
     socket.on('chat:sendMessage', async ({ topic, message }) => {
-        if (!socket.uid) return; // Não autenticado
+        if (!socket.uid) return;
 
-        // ** 1. SANITIZAR A MENSAGEM (SEGURANÇA) **
         const sanitizedMessage = sanitizeHtml(message, {
-            allowedTags: [], // Remove TODAS as tags HTML
+            allowedTags: [],
             allowedAttributes: {}
         });
 
-        if (sanitizedMessage.trim().length === 0) return; // Ignora mensagens vazias
+        if (sanitizedMessage.trim().length === 0) return;
 
-        // ** 2. PREPARAR O PAYLOAD **
         const chatPayload = {
             senderId: socket.uid,
-            senderNickname: socket.nickname, // Nickname para exibição
-            senderEmail: socket.email,      // Email completo para armazenamento
+            senderNickname: socket.nickname,
+            senderEmail: socket.email,
             message: sanitizedMessage,
             topic: topic,
             timestamp: admin.firestore.FieldValue.serverTimestamp()
         };
 
-        // ** 3. SALVAR NO FIREBASE **
         try {
             const docRef = await db.collection('chats').doc(topic).collection('messages').add(chatPayload);
             console.log(`[CHAT DB] Mensagem ${docRef.id} salva.`);
 
-            // ** 4. TRANSMITIR PARA A SALA **
-            // (Precisamos ler o documento salvo para obter o timestamp real)
             const finalPayload = (await docRef.get()).data();
             io.to(`topic_${topic}`).emit('server:newMessage', finalPayload);
 
@@ -401,7 +393,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('user:setNickname', (nickname) => {
-        // Armazena o nickname no próprio socket para uso posterior
         socket.nickname = nickname; 
         console.log(`[CONECTADO] Usuário ${socket.id} definiu o nickname como: ${nickname}`);
     });
@@ -411,7 +402,6 @@ io.on('connection', (socket) => {
         const email = socket.email || null;
         const roomCode = generateRoomCode();
 
-        // Define as questões: Usa as customizadas se enviadas, senão fallback
         let questionsToUse = (customQuestions && customQuestions.length > 0) 
                              ? customQuestions 
                              : fallbackQuestions;
@@ -426,7 +416,7 @@ io.on('connection', (socket) => {
                 streak: 0, 
                 correctAnswers: 0,
                 wrongAnswers: 0,
-                bestStreak: 0 // CORREÇÃO: Inicialização explícita
+                bestStreak: 0
             }],
             gameState: 'lobby',
             questions: questionsToUse,
@@ -453,22 +443,30 @@ io.on('connection', (socket) => {
         const room = rooms[roomCode];
         if (!room) { socket.emit('joinError', 'Código inválido.'); return; }
         
-        // LÓGICA DE RECONEXÃO: Se o UID já estava na sala, é o celular voltando de uma queda!
         const existingPlayer = room.players.find(p => p.uid === socket.uid);
         if (existingPlayer) {
             console.log(`[RECONEXÃO] Jogador ${nickname} reconectou na sala ${roomCode}`);
-            existingPlayer.id = socket.id; // Atualiza o socket para a comunicação voltar a funcionar
+            existingPlayer.id = socket.id; 
             socket.join(roomCode);
             socket.emit('joinSuccess', { roomCode: roomCode, players: room.players, hostId: room.hostId });
             
-            // Força a tela do celular a destravar enviando o estado atual de onde o jogo parou
-            socket.emit('gameStateUpdate', {
+            let rescuePayload = {
                 gameState: room.gameState,
-                timer: room.gameState === 'acceptingAnswers' ? 15 : 5, // Um timer genérico para re-sincronizar
+                timer: room.gameState === 'acceptingAnswers' ? 15 : 5,
                 questionText: room.questions[room.currentQuestionIndex]?.text,
                 options: room.questions[room.currentQuestionIndex]?.options,
                 questionData: room.questions[room.currentQuestionIndex]
-            });
+            };
+
+            if (room.gameState === 'showingResults') {
+                rescuePayload.results = { 
+                    correctAnswerIndices: Array.isArray(room.questions[room.currentQuestionIndex].correctAnswerIndices) 
+                        ? room.questions[room.currentQuestionIndex].correctAnswerIndices 
+                        : [room.questions[room.currentQuestionIndex].correctAnswerIndex]
+                };
+            }
+
+            socket.emit('gameStateUpdate', rescuePayload);
             return;
         }
 
@@ -486,42 +484,32 @@ io.on('connection', (socket) => {
         socket.to(roomCode).emit('updatePlayerList', room.players);
     });
 
-    // ===== NOVO EVENTO: host:kickPlayer =====
     socket.on('host:kickPlayer', ({ roomCode, playerIdToKick }) => {
         const room = rooms[roomCode];
-        // Garante que apenas o host pode expulsar e que ele não expulse a si mesmo
         if (room && room.hostId === socket.id && playerIdToKick !== socket.id) {
             
-            // Encontra o socket do jogador a ser expulso
             const socketToKick = io.sockets.sockets.get(playerIdToKick);
             if (socketToKick) {
-                // Envia uma mensagem para o jogador expulso
                 socketToKick.emit('kicked', 'Você foi removido da sala pelo Host.');
-                // Força a desconexão dele da sala
                 socketToKick.leave(roomCode);
             }
             
-            // Remove o jogador da lista da sala
             room.players = room.players.filter(p => p.id !== playerIdToKick);
             
-            // Atualiza a lista de jogadores para todos que permaneceram na sala
             io.to(roomCode).emit('updatePlayerList', room.players);
             
             console.log(`[${roomCode}] Host expulsou o jogador ${playerIdToKick}.`);
         }
     });
     
-    // ===== EVENTOS DE JOGO ATUALIZADOS =====
     socket.on('host:startGame', (roomCode) => {
         const room = rooms[roomCode];
         if (room && room.hostId === socket.id) {
             console.log(`[${roomCode}] Host iniciou o jogo.`);
-            // A função advanceToNextQuestion agora inicia e continua o jogo
             advanceToNextQuestion(roomCode);
         }
     });
 
-    // NOVO EVENTO para avançar para a próxima questão
     socket.on('host:nextQuestion', (roomCode) => {
         const room = rooms[roomCode];
         if (room && room.hostId === socket.id && room.gameState === 'showingResults') {
@@ -534,11 +522,9 @@ io.on('connection', (socket) => {
          const room = rooms[roomCode];
          if (!room || room.gameState !== 'acceptingAnswers') return;
 
-         // Acha o jogador pelo UID (à prova de troca de conexões)
          const player = room.players.find(p => p.uid === socket.uid);
          if (!player) return;
 
-         // Usa o UID como chave no lugar do socket.id
          if (!room.answers[player.uid]) {
              room.answers[player.uid] = { answerIndices: answerIndices, submissionTime: Date.now() };
              
@@ -569,26 +555,6 @@ io.on('connection', (socket) => {
             if (room.timer) clearTimeout(room.timer); 
             
             endGame(roomCode); 
-        }
-    });
-    
-    socket.on('disconnect', () => {
-        console.log(`[DESCONECTADO] Usuário com ID: ${socket.id}`);
-        // Lógica de disconnect das salas de JOGO
-        for (const roomCode in rooms) {
-            const room = rooms[roomCode];
-            const playerIndex = room.players.findIndex(p => p.id === socket.id);
-            if (playerIndex !== -1) {
-                if (socket.id === room.hostId) {
-                    if (room.timer) clearTimeout(room.timer);
-                    io.to(roomCode).emit('error', 'O Host encerrou a sala.');
-                    delete rooms[roomCode];
-                } else {
-                    room.players.splice(playerIndex, 1);
-                    io.to(roomCode).emit('updatePlayerList', room.players);
-                }
-                break;
-            }
         }
     });
 });
