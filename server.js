@@ -31,6 +31,11 @@ const STREAK_BONUS = 20;
 const QUESTION_TIME_SECONDS = 30;
 const PREPARE_TIME_SECONDS = 5;
 
+// Hack para manter o servidor gratuito do Render acordado (pode ser removido em produção ou se usar outro serviço)
+app.get('/ping', (req, res) => {
+    res.status(200).send('Servidor do Logisticon acordado!');
+});
+
 // Perguntas de fallback caso o host não envie nada (apenas para teste)
 const fallbackQuestions = [
     {
