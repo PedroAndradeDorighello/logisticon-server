@@ -303,8 +303,8 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('disconnect', () => {
-        console.log(`[DESCONECTADO] Usuário com ID: ${socket.id}`);
+    socket.on('disconnect', (reason) => {
+        console.log(`[DESCONECTADO] Usuário com ID: ${socket.id} | Motivo: ${reason}`);
         for (const roomCode in rooms) {
             const room = rooms[roomCode];
             const playerIndex = room.players.findIndex(p => p.id === socket.id);
