@@ -311,9 +311,15 @@ io.on('connection', (socket) => {
             
             if (playerIndex !== -1) {
                 if (socket.id === room.hostId) {
-                    if (room.timer) clearTimeout(room.timer);
-                    io.to(roomCode).emit('error', 'O Host encerrou a sala (Desconectado).');
-                    delete rooms[roomCode];
+                    console.log(`[REDE] Host caiu. Iniciando tolerância de 60s para a sala ${roomCode}...`);
+                    room.hostDisconnectTimer = setTimeout(() => {
+                        if (rooms[roomCode]) {
+                            if (room.timer) clearTimeout(room.timer);
+                            io.to(roomCode).emit('error', 'O Host perdeu a conexão definitivamente. Partida encerrada.');
+                            delete rooms[roomCode];
+                            console.log(`[${roomCode}] Sala destruída após timeout do Host.`);
+                        }
+                    }, 60000);
                 } else {
 
                     if (room.gameState === 'lobby') {
@@ -413,6 +419,7 @@ io.on('connection', (socket) => {
 
         rooms[roomCode] = {
             hostId: socket.id,
+            hostUid: socket.uid,
             players: [{ 
                 id: socket.id, 
                 nickname: gameNickname, 
@@ -451,6 +458,17 @@ io.on('connection', (socket) => {
         const existingPlayer = room.players.find(p => p.uid === socket.uid);
         if (existingPlayer) {
             console.log(`[RECONEXÃO] Jogador ${nickname} reconectou na sala ${roomCode}`);
+
+            if (room.hostUid === socket.uid) {
+                room.hostId = socket.id;
+                
+                if (room.hostDisconnectTimer) {
+                    clearTimeout(room.hostDisconnectTimer);
+                    room.hostDisconnectTimer = null;
+                    console.log(`[RECONEXÃO] Host salvou a sala da autodestruição!`);
+                }
+            }
+
             existingPlayer.id = socket.id; 
             socket.join(roomCode);
             socket.emit('joinSuccess', { roomCode: roomCode, players: room.players, hostId: room.hostId });
