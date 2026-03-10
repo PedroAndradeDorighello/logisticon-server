@@ -21,7 +21,14 @@ const db = admin.firestore();
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    pingInterval: 3000, // Manda um "Ping" a cada 3 segundos
+    pingTimeout: 5000,   // Se não responder em 5s, considera que caiu
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
 const PORT = 3000;
 let rooms = {};
