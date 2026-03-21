@@ -288,6 +288,13 @@ function endGame(roomCode) {
         playedQuestions: room.questions 
     });
     console.log(`[${roomCode}] Jogo finalizado.`);
+
+    setTimeout(() => {
+        if (rooms[roomCode]) {
+            delete rooms[roomCode];
+            console.log(`[${roomCode}] Sala apagada da memória.`);
+        }
+    }, 60000);
 }
 
 io.on('connection', (socket) => {
