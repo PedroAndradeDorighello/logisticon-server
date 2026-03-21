@@ -453,7 +453,8 @@ io.on('connection', (socket) => {
             gameOptions: {
                 showRanking: gameOptions ? gameOptions.showRanking !== false : true,
                 showExplanation: gameOptions ? gameOptions.showExplanation === true : false, 
-                scoreType: gameOptions ? gameOptions.scoreType || 'speed' : 'speed',
+                useSpeed: gameOptions ? gameOptions.useSpeed === true : false,
+                useStreak: gameOptions ? gameOptions.useStreak === true : false,
                 questionTime: (gameOptions && gameOptions.questionTime) ? parseInt(gameOptions.questionTime) : QUESTION_TIME_SECONDS
             }
         };
