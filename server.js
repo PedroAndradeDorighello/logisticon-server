@@ -153,34 +153,44 @@ function showResults(roomCode) {
         }
 
         if (isCorrect) {
-            correctCount++;
-            player.correctAnswers++;
-            
-            let speedPoints = 0;
-            if (room.gameOptions.scoreType === 'speed') {
-                const timeTaken = (playerAnswerData.submissionTime - room.questionStartTime) / 1000;
-                const roomTimeLimit = room.gameOptions.questionTime || QUESTION_TIME_SECONDS;
-                const totalTimeAvailable = roomTimeLimit + 5;
-                const timeRatio = Math.max(0, 1 - (timeTaken / totalTimeAvailable));
-                speedPoints = Math.round(POINTS_PER_ANSWER * timeRatio);
-            } else { 
-                speedPoints = POINTS_PER_ANSWER;
-            }
+    correctCount++;
+    player.correctAnswers++;
+    
+    let basePoints = POINTS_PER_ANSWER; // Ex: 1000
+    let roundPoints = 0;
 
-            player.streak++;
-            // CORREÇÃO do Streak
-            if (player.streak > player.bestStreak) {
-                player.bestStreak = player.streak;
-            }
+    // 1. Cálculo de Velocidade
+    if (room.gameOptions.useSpeed) {
+        const timeTaken = (playerAnswerData.submissionTime - room.questionStartTime) / 1000;
+        const roomTimeLimit = room.gameOptions.questionTime || QUESTION_TIME_SECONDS;
+        const totalTimeAvailable = roomTimeLimit + 5;
+        const timeRatio = Math.max(0, 1 - (timeTaken / totalTimeAvailable));
+        roundPoints = Math.round(basePoints * timeRatio);
+    } else { 
+        roundPoints = basePoints;
+    }
 
-            const streakBonusPoints = (player.streak - 1) * STREAK_BONUS;
-            pointsThisRound = speedPoints + streakBonusPoints;
-            player.score = (player.score || 0) + pointsThisRound;
-        } else {
-            incorrectCount++;
-            player.wrongAnswers++;
-            player.streak = 0; 
-        }
+    // Gerenciamento interno do Streak (sempre conta para o Ranking final/Best Streak)
+    player.streak++;
+    if (player.streak > player.bestStreak) {
+        player.bestStreak = player.streak;
+    }
+
+    // 2. Cálculo de Bônus de Streak (Apenas se a opção estiver ativa)
+    let streakBonus = 0;
+    if (room.gameOptions.useStreak && player.streak > 1) {
+        streakBonus = (player.streak - 1) * STREAK_BONUS; // Ex: STREAK_BONUS = 100
+    }
+
+    pointsThisRound = roundPoints + streakBonus;
+    player.score = (player.score || 0) + pointsThisRound;
+
+} else {
+    // Errou a questão
+    incorrectCount++;
+    player.wrongAnswers++;
+    player.streak = 0; 
+}
 
         roundRanking.push({
             id: player.id,
