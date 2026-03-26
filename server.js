@@ -34,7 +34,7 @@ const PORT = 3000;
 let rooms = {};
 
 const POINTS_PER_ANSWER = 1000;
-const STREAK_BONUS = 20;
+const STREAK_BONUS = 100;
 const QUESTION_TIME_SECONDS = 30;
 const PREPARE_TIME_SECONDS = 5;
 
@@ -165,7 +165,7 @@ function showResults(roomCode) {
         const roomTimeLimit = room.gameOptions.questionTime || QUESTION_TIME_SECONDS;
         const totalTimeAvailable = roomTimeLimit + 5;
         const timeRatio = Math.max(0, 1 - (timeTaken / totalTimeAvailable));
-        roundPoints = Math.round(basePoints * timeRatio);
+        roundPoints = Math.round(basePoints * timeRatio) + POINTS_PER_ANSWER;
     } else { 
         roundPoints = basePoints;
     }
