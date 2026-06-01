@@ -492,11 +492,16 @@ io.on('connection', (socket) => {
                     room.hostDisconnectTimer = null;
                     console.log(`[RECONEXÃO] Host salvou a sala da autodestruição!`);
                 }
+            } else {
+                existingPlayer.nickname = nickname || existingPlayer.nickname;
             }
 
             existingPlayer.id = socket.id; 
             socket.join(roomCode);
+            
             socket.emit('joinSuccess', { roomCode: roomCode, players: room.players, hostId: room.hostId });
+
+            socket.to(roomCode).emit('updatePlayerList', room.players);
             
             let rescuePayload = {
                 gameState: room.gameState,
@@ -530,6 +535,25 @@ io.on('connection', (socket) => {
         socket.join(roomCode);
         socket.emit('joinSuccess', { roomCode: roomCode, players: room.players, hostId: room.hostId });
         socket.to(roomCode).emit('updatePlayerList', room.players);
+    });
+
+    socket.on('leaveRoom', (data) => {
+        const roomCode = typeof data === 'string' ? data : data.roomCode;
+        const room = rooms[roomCode];
+        
+        if (room) {
+            const playerIndex = room.players.findIndex(p => p.uid === socket.uid);
+            
+            if (playerIndex !== -1) {
+                room.players.splice(playerIndex, 1);
+                
+                socket.leave(roomCode);
+                
+                io.to(roomCode).emit('updatePlayerList', room.players);
+                
+                console.log(`[LOBBY] Jogador ${socket.nickname} saiu voluntariamente da sala ${roomCode}.`);
+            }
+        }
     });
 
     socket.on('host:kickPlayer', ({ roomCode, playerIdToKick }) => {
