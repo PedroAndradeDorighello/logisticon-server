@@ -319,7 +319,55 @@ io.on('connection', (socket) => {
             console.log(`[AUTH] Usuário ${socket.nickname} (Email: ${socket.email || 'N/A'}, UID: ${socket.uid}) autenticado.`);
             
             socket.emit('auth:success', { uid: socket.uid, nickname: socket.nickname });
+            
+            for (const roomCode in rooms) {
+            const room = rooms[roomCode];
+            const existingPlayer = room.players.find(p => p.uid === socket.uid);
+            
+            if (existingPlayer) {
+                console.log(`[RECONEXÃO AUTOMÁTICA] Jogador ${socket.nickname} mapeado de volta à sala ${roomCode}`);
+                
+                // Vincula o novo ID do socket ao jogador existente
+                if (room.hostUid === socket.uid) {
+                    room.hostId = socket.id;
+                    if (room.hostDisconnectTimer) {
+                        clearTimeout(room.hostDisconnectTimer);
+                        room.hostDisconnectTimer = null;
+                    }
+                }
+                existingPlayer.id = socket.id;
+                
+                // Reinsere o socket na sala do Socket.io
+                socket.join(roomCode);
+                
+                // Atualiza a lista de quem está online para todos
+                io.to(roomCode).emit('updatePlayerList', room.players);
+                
+                // EMITE O AVISO DE RECONEXÃO PARA A SALA
+                io.to(roomCode).emit('playerReconnectedNotify', { nickname: socket.nickname });
+                
+                // Sincroniza o estado atual do jogo para o jogador que voltou
+                if (room.currentQuestionIndex >= 0) {
+                    const currentQuestion = room.questions[room.currentQuestionIndex];
+                    const correctIndices = Array.isArray(currentQuestion.correctAnswerIndices) 
+                        ? currentQuestion.correctAnswerIndices 
+                        : [currentQuestion.correctAnswerIndex];
 
+                    let rescuePayload = {
+                        gameState: room.gameState,
+                        timer: room.gameState === 'acceptingAnswers' ? 15 : 5, 
+                        questionText: currentQuestion?.text,
+                        options: currentQuestion?.options,
+                        questionData: currentQuestion,
+                        questionIndex: room.currentQuestionIndex,
+                        totalQuestions: room.questions.length,
+                        results: { correctAnswerIndices: correctIndices }
+                    };
+                    socket.emit('gameStateUpdate', rescuePayload);
+                }
+                return;
+            }
+        }
         } catch (error) {
             console.log(`[AUTH FALHOU] ${error.message}`);
             socket.emit('auth:failed', error.message); 
@@ -339,7 +387,7 @@ io.on('connection', (socket) => {
                     room.hostDisconnectTimer = setTimeout(() => {
                         if (rooms[roomCode]) {
                             if (room.timer) clearTimeout(room.timer);
-                            io.to(roomCode).emit('error', 'O Host perdeu a conexão definitivamente. Partida encerrada.');
+                            io.to(roomCode).emit('gameError', 'O Host perdeu a conexão definitivamente. Partida encerrada.');
                             delete rooms[roomCode];
                             console.log(`[${roomCode}] Sala destruída após timeout do Host.`);
                         }
